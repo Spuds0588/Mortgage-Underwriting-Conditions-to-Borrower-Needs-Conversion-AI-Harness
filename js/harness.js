@@ -246,6 +246,7 @@ export class Harness {
     const engine = new EngineCtor();
 
     emit('SYSTEM', 'INFO', `engine:${engine.name}`);
+    const tInit0 = performance.now();
     const available = await engine.isAvailable();
     if (!available) {
       throw new Error(
@@ -255,6 +256,8 @@ export class Harness {
       );
     }
     await engine.init((msg) => emit('SYSTEM', 'INFO', `engine:${engine.name}`, null, { message: msg }));
+    report.meta.initMs = Math.round(performance.now() - tInit0);
+    report.meta.model = engine.model || engine.device || engine.name;
 
     const guardAbort = () => { if (signal && signal.aborted) throw new DOMException('Aborted', 'AbortError'); };
 

@@ -134,6 +134,7 @@ async function runPipeline() {
       signal: controller.signal,
       progressCallback: onPipelineEvent,
     });
+    window.__lastReport = report;   // exposed for benchmarking/telemetry tooling
     showSummary(report.meta, started);
     if (!report.items.length) {
       addSystemRow('No conditions extracted — check the input or tune the extraction prompt.', false);
