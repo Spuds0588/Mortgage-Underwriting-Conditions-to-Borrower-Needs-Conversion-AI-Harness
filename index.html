@@ -1,0 +1,152 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Nano Underwriting Harness — Local AI Conditions → Borrower Needs</title>
+
+  <!-- SEO -->
+  <meta name="description" content="A lightweight, zero-dependency, open-source test bench that ingests loan underwriting conditions (clean or messy) and translates them into client-friendly borrower needs using Chrome's built-in Gemini Nano. 100% in-browser — no cloud, no PII leaves the machine." />
+  <meta name="keywords" content="Gemini Nano, window.ai, local LLM, Prompt API, mortgage underwriting, underwriting conditions, borrower needs, browser AI, chrome built-in AI, vanilla javascript" />
+  <meta name="author" content="Spuds0588" />
+  <meta name="robots" content="index, follow" />
+  <meta name="theme-color" content="#0b0e14" />
+
+  <!-- OpenGraph -->
+  <meta property="og:type" content="website" />
+  <meta property="og:title" content="Nano Underwriting Harness — Local AI Conditions → Borrower Needs" />
+  <meta property="og:description" content="In-browser local LLM test bench: extract loan underwriting conditions and translate them into client-friendly needs using Chrome's built-in Gemini Nano. Zero dependencies, zero cloud." />
+  <meta property="og:url" content="https://spuds0588.github.io/Mortgage-Underwriting-Conditions-to-Borrower-Needs-Conversion-AI-Harness/" />
+  <meta property="og:site_name" content="Nano Underwriting Harness" />
+
+  <!-- Twitter -->
+  <meta name="twitter:card" content="summary" />
+  <meta name="twitter:title" content="Nano Underwriting Harness — Local AI Conditions → Borrower Needs" />
+  <meta name="twitter:description" content="Extract loan underwriting conditions and translate them into client-friendly needs — 100% locally in Chrome with Gemini Nano." />
+
+  <link rel="canonical" href="https://spuds0588.github.io/Mortgage-Underwriting-Conditions-to-Borrower-Needs-Conversion-AI-Harness/" />
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🧪</text></svg>" />
+  <link rel="stylesheet" href="css/styles.css" />
+</head>
+<body>
+  <!-- ══════════ Environment Gatekeeper (hidden by default, JS shows it when Nano is missing) ══════════ -->
+  <div id="gatekeeper" class="gatekeeper hidden" role="alert">
+    <div class="gatekeeper-inner">
+      <strong>⚠️ Gemini Nano not detected in this browser.</strong>
+      <p>
+        This harness runs on Chrome's built-in <code>LanguageModel</code> API (Gemini Nano).
+        You appear to be using a browser or profile without it. To enable it:
+      </p>
+      <ol>
+        <li>Use <strong>Google Chrome</strong> (v138+ recommended, stable channel).</li>
+        <li>Open <code>chrome://flags/#prompt-api-for-gemini-nano</code> → set to <strong>Enabled</strong>.</li>
+        <li>Open <code>chrome://components</code> → find <strong>Optimization Guide On Device Model</strong> → click <strong>Check for update</strong> (wait for it to fully download, ~2&nbsp;GB).</li>
+        <li>Relaunch Chrome and reopen this page.</li>
+      </ol>
+      <p class="gatekeeper-note">Everything here still works <em>except AI inference</em> — you can explore samples and the UI. Demo mode with mock data is also available in Advanced Settings.</p>
+      <button id="gatekeeper-dismiss" class="btn btn-ghost btn-sm" type="button">Dismiss</button>
+    </div>
+  </div>
+
+  <header class="app-header">
+    <div>
+      <h1>🧪 Nano Underwriting Harness</h1>
+      <p class="tagline">Local AI: loan underwriting conditions → client-friendly borrower needs. Zero cloud. Zero dependencies.</p>
+    </div>
+    <div id="engine-status" class="engine-status" aria-live="polite">
+      <span class="status-dot dot-pending"></span>
+      <span id="engine-status-text">Checking environment…</span>
+    </div>
+  </header>
+
+  <main class="layout">
+    <!-- ══════════ LEFT COLUMN: Input + Config ══════════ -->
+    <section class="panel" aria-label="Input and configuration">
+      <div class="panel-block">
+        <label class="field-label" for="sample-select">Sample data</label>
+        <select id="sample-select">
+          <option value="">— Paste your own text below —</option>
+          <option value="json">Clean JSON (structured conditions)</option>
+          <option value="email">Email thread (messy prose)</option>
+          <option value="ocr">Messy OCR scan (garbled text)</option>
+        </select>
+
+        <label class="field-label" for="input-text">Underwriting conditions (paste or edit)</label>
+        <textarea id="input-text" rows="12" spellcheck="false" placeholder="Paste loan underwriting conditions here — clean JSON, email prose, or messy OCR output."></textarea>
+
+        <div class="input-meta">
+          <span id="input-chars">0 chars</span>
+          <span id="input-chunks">chunking: —</span>
+        </div>
+      </div>
+
+      <div class="panel-block">
+        <label class="field-label" for="engine-select">Inference engine</label>
+        <select id="engine-select">
+          <option value="nano">Gemini Nano (Chrome built-in) — V1</option>
+          <option value="webllm" disabled>WebLLM — Coming in V2</option>
+          <option value="transformers" disabled>Transformers.js — Coming in V2</option>
+        </select>
+        <p class="hint" id="engine-hint">Runs entirely on-device. Your data never leaves this machine.</p>
+      </div>
+
+      <div class="panel-block">
+        <button id="run-btn" class="btn btn-primary" type="button">▶ Run Pipeline</button>
+        <button id="stop-btn" class="btn btn-danger hidden" type="button">■ Stop</button>
+        <button id="clear-btn" class="btn btn-ghost" type="button">Clear output</button>
+      </div>
+
+      <div class="panel-block">
+        <details id="advanced-settings">
+          <summary>⚙️ Advanced Settings (live prompt tuning)</summary>
+          <div class="advanced-body">
+            <label class="field-label" for="setting-extract-prompt">Stage 1 — Extraction system prompt</label>
+            <textarea id="setting-extract-prompt" rows="6" spellcheck="false"></textarea>
+            <label class="field-label" for="setting-translate-prompt">Stage 2 — Translation system prompt</label>
+            <textarea id="setting-translate-prompt" rows="6" spellcheck="false"></textarea>
+            <label class="field-label" for="setting-max-conditions">Max conditions per chunk</label>
+            <input id="setting-max-conditions" type="number" min="1" max="20" value="10" />
+            <label class="checkbox-row">
+              <input id="setting-demo-mode" type="checkbox" />
+              <span>Demo mode (mock AI — works without Gemini Nano)</span>
+            </label>
+            <button id="reset-prompts-btn" class="btn btn-ghost btn-sm" type="button">Reset prompts to defaults</button>
+          </div>
+        </details>
+      </div>
+    </section>
+
+    <!-- ══════════ RIGHT COLUMN: Waterfall + Results ══════════ -->
+    <section class="panel" aria-label="Pipeline output">
+      <div class="panel-block panel-output">
+        <div class="output-header">
+          <h2>Pipeline Waterfall</h2>
+          <div id="run-summary" class="run-summary hidden"></div>
+        </div>
+
+        <div id="waterfall" class="waterfall" aria-live="polite">
+          <div class="waterfall-empty" id="waterfall-empty">Run the pipeline to see chunk extraction and translation timing here.</div>
+        </div>
+
+        <div class="results-header hidden" id="results-header">
+          <h2>Extracted Conditions → Client Needs</h2>
+        </div>
+        <ol id="results-list" class="results-list"></ol>
+
+        <div class="report-row hidden" id="report-row">
+          <button id="download-report-btn" class="btn btn-secondary" type="button">⬇ Download JSON Report</button>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <footer class="app-footer">
+    <p>
+      100% vanilla HTML/CSS/JS · Inference via <code>window.ai</code> / <code>LanguageModel</code> (Gemini Nano) ·
+      WebLLM &amp; Transformers.js adapters stubbed for V2 · <a href="https://github.com/Spuds0588/Mortgage-Underwriting-Conditions-to-Borrower-Needs-Conversion-AI-Harness" target="_blank" rel="noopener">Source on GitHub</a>
+    </p>
+  </footer>
+
+  <script type="module" src="js/app.js"></script>
+</body>
+</html>
