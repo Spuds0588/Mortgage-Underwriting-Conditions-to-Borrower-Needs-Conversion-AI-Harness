@@ -18,15 +18,11 @@ import { TransformersEngine } from './engines/TransformersEngine.js';
 /* ── Default, user-tunable prompts (Advanced Settings) ──────────── */
 
 export const DEFAULT_EXTRACT_PROMPT = [
-  'You are a mortgage-underwriting condition extraction engine.',
-  'From the TEXT CHUNK below, extract every distinct underwriting condition or requirement as one array item.',
-  'Ignore greetings, signatures, email headers and small talk.',
-  'Clean up OCR noise, typos and abbreviations into clear wording.',
-  'Merge continuation lines that belong to the same condition.',
-  'Answer with ONLY a JSON array of strings — no markdown, no commentary.',
-  'Maximum {{MAX}} items. If nothing qualifies, answer [].',
+  'Extract every loan underwriting condition from the text. A condition is a requirement the borrower must satisfy.',
+  'Ignore greetings, signatures, headers and small talk.',
+  'Output ONLY a JSON array of strings, one per condition. Output [] if there are none.',
   '',
-  'TEXT CHUNK:',
+  'TEXT:',
   '<<<',
   '{{CHUNK}}',
   '>>>',
@@ -272,7 +268,7 @@ export class Harness {
           .replaceAll('{{CHUNK}}', chunk.text);
         const t0 = performance.now();
         try {
-          const raw = await engine.prompt(prompt, { signal });
+          const raw = await engine.prompt(prompt, { signal, temperature: 0.1 });
           const ms = Math.round(performance.now() - t0);
           report.meta.promptCount += 1;
           const found = parseConditionsJson(raw).slice(0, maxConditions);
