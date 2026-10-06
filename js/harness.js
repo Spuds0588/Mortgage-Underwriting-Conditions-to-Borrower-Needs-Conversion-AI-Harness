@@ -18,7 +18,7 @@ import { TransformersEngine } from './engines/TransformersEngine.js';
 /* ── Build identity ─────────────────────────────────────────────── */
 
 /** Bumped with each behavior change so downloaded reports self-identify. */
-export const HARNESS_VERSION = '1.4.0';
+export const HARNESS_VERSION = '1.4.1';
 
 /* ── Default, user-tunable prompts (Advanced Settings) ──────────── */
 
@@ -26,6 +26,8 @@ export const DEFAULT_EXTRACT_PROMPT = [
   'Extract every loan underwriting condition from the text. A condition is a requirement the borrower must satisfy.',
   'Merge requirements that belong together into one condition; do not split them, and do not output duplicates.',
   'Include requirements stated indirectly ("she wants X redone", "we need Y") — not only imperatives.',
+  'Fold vague fragments ("No exceptions.", "still pending", "if it helps") into the specific requirement they modify — never output them as standalone conditions.',
+  'For OCR-garbled amounts, keep the digit order exactly as written when de-garbling (e.g. $4l2,O00 = $412,000).',
   'The text may contain OCR garble (4=a, 0=o, 1=i/l, 3=e, 8=B, £=l — e.g. P8I/PML = PMI, P1F = PIF, 2Ol9 = 2019); read through it and write the conditions in clean English.',
   'Ignore greetings, signatures, headers and small talk.',
   'Output ONLY a JSON array of strings, one per condition. Output [] if there are none.',
@@ -40,7 +42,7 @@ export const DEFAULT_TRANSLATE_PROMPT = [
   'Rewrite the mortgage underwriting condition below as ONE short, warm, plain-English sentence addressed directly to the borrower ("you").',
   'State the ACTION or DOCUMENT the borrower must provide — never merely describe the situation.',
   'Keep numbers, dates and dollar amounts exactly as given. Never invent requirements, documents or amounts not present in the condition or context.',
-  'Expand jargon and acronyms using this glossary:',
+  'Expand jargon and acronyms using this glossary (expand ONLY acronyms the condition actually contains — never import other glossary items):',
   '- VOE = Verification of Employment (proof of employment or income, NOT equity, NOT valuation).',
   '- PMI = Private Mortgage Insurance (NOT payment indemnity; PML or P8I are garbled forms of PMI).',
   '- YTD = year-to-date (income so far this year).',
@@ -388,7 +390,7 @@ export class Harness {
         const srcChunk = cond.chunkId ? chunks.find((c) => c.id === cond.chunkId) : null;
         // Cap context so the translation prompt stays small enough for
         // on-device models to attend to the CONDITION itself.
-        const ctx = srcChunk ? srcChunk.text.slice(0, 700) : '(no extra context — rely on the glossary)';
+        const ctx = srcChunk ? srcChunk.text.slice(0, 700) : '(no extra context — rewrite only what the condition itself says)';
         const prompt = translatePrompt
           .replaceAll('{{CONTEXT}}', ctx)
           .replaceAll('{{CONDITION}}', cond.condition);
