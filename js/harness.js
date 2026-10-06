@@ -18,14 +18,15 @@ import { TransformersEngine } from './engines/TransformersEngine.js';
 /* ── Build identity ─────────────────────────────────────────────── */
 
 /** Bumped with each behavior change so downloaded reports self-identify. */
-export const HARNESS_VERSION = '1.4.1';
+export const HARNESS_VERSION = '1.4.2';
 
 /* ── Default, user-tunable prompts (Advanced Settings) ──────────── */
 
 export const DEFAULT_EXTRACT_PROMPT = [
   'Extract every loan underwriting condition from the text. A condition is a requirement the borrower must satisfy.',
-  'Merge requirements that belong together into one condition; do not split them, and do not output duplicates.',
+  'Merge requirements that belong together into one condition; do not split them, and do not output duplicates. Facts about the same matter are ONE condition (e.g. "Appraisal ordered 10/2, value $412,000, effective 90 days" — not three).',
   'Include requirements stated indirectly ("she wants X redone", "we need Y") — not only imperatives.',
+  'Title/vesting language is a requirement on the document: "vesting must read X" means the title must show ownership exactly as X (names verbatim) — never turn it into a marriage-status question.',
   'Fold vague fragments ("No exceptions.", "still pending", "if it helps") into the specific requirement they modify — never output them as standalone conditions.',
   'For OCR-garbled amounts, keep the digit order exactly as written when de-garbling (e.g. $4l2,O00 = $412,000).',
   'The text may contain OCR garble (4=a, 0=o, 1=i/l, 3=e, 8=B, £=l — e.g. P8I/PML = PMI, P1F = PIF, 2Ol9 = 2019); read through it and write the conditions in clean English.',
@@ -41,7 +42,7 @@ export const DEFAULT_EXTRACT_PROMPT = [
 export const DEFAULT_TRANSLATE_PROMPT = [
   'Rewrite the mortgage underwriting condition below as ONE short, warm, plain-English sentence addressed directly to the borrower ("you").',
   'State the ACTION or DOCUMENT the borrower must provide — never merely describe the situation.',
-  'Keep numbers, dates and dollar amounts exactly as given. Never invent requirements, documents or amounts not present in the condition or context.',
+  'Keep numbers, dates and dollar amounts exactly as given, and keep their role: a "90-day effective" period runs 90 days FORWARD from the event in the condition (an appraisal effective 90 days is valid until 90 days after its order — never "delivered 90 days ago"). Never invent requirements, documents or amounts not present in the condition or context.',
   'Expand jargon and acronyms using this glossary (expand ONLY acronyms the condition actually contains — never import other glossary items):',
   '- VOE = Verification of Employment (proof of employment or income, NOT equity, NOT valuation).',
   '- PMI = Private Mortgage Insurance (NOT payment indemnity; PML or P8I are garbled forms of PMI).',
@@ -228,6 +229,27 @@ export function parseStructuredConditions(text) {
   return items.length ? items : null;
 }
 
+/* ── Deterministic post-extraction filter ───────────────────────── */
+
+const VAGUE_FRAGMENT_RE = /^(?:no\s+exceptions?\.?|still\s+pending\.?|if\s+it\s+helps\.?)$/i;
+
+/**
+ * Drop vague fragments that small models keep emitting as standalone
+ * conditions despite fold instructions. Dropped items are recorded in the
+ * report (chunk.dropped / meta.dropped), never silently lost.
+ * @param {string[]} list
+ * @returns {{kept: string[], dropped: string[]}}
+ */
+export function filterVagueFragments(list) {
+  const kept = [];
+  const dropped = [];
+  for (const item of list) {
+    const norm = String(item).trim().replace(/\s+/g, ' ');
+    (VAGUE_FRAGMENT_RE.test(norm) ? dropped : kept).push(item);
+  }
+  return { kept, dropped };
+}
+
 /* ── The Harness ────────────────────────────────────────────────── */
 
 export class Harness {
@@ -281,6 +303,7 @@ export class Harness {
         errorCount: 0,
         chunkCount: 0,
         errors: [],
+        dropped: 0,
       },
       chunks: [],
       items: [],
@@ -357,6 +380,14 @@ export class Harness {
             report.meta.promptCount += 1;
             found = parseConditionsJson(raw2).slice(0, maxConditions);
             report.chunks.find((c) => c.id === chunk.id).retry = true;
+          }
+          // Deterministic post-filter: vague fragments Nano keeps emitting.
+          const filtered = filterVagueFragments(found);
+          found = filtered.kept;
+          if (filtered.dropped.length) {
+            const entry = report.chunks.find((c) => c.id === chunk.id);
+            if (entry) entry.dropped = filtered.dropped;
+            report.meta.dropped = (report.meta.dropped ?? 0) + filtered.dropped.length;
           }
           conditions.push(...found.map((c, i) => ({ id: `cond_${conditions.length + i + 1}`, chunkId: chunk.id, condition: c })));
           report.chunks.find((c) => c.id === chunk.id).conditionsFound = found.length;
