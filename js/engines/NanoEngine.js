@@ -62,6 +62,10 @@ export class NanoEngine extends BaseEngine {
           'You are a precise information-extraction and rewriting assistant for a mortgage underwriting harness. ' +
           'Always answer with exactly what the user request specifies and nothing else.',
       }],
+      // Low temperature + narrow topK keep extraction and translation
+      // deterministic (the Prompt API tunes sampling at session level).
+      temperature: 0.2,
+      topK: 8,
       monitor: undefined,
     };
 

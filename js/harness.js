@@ -18,14 +18,15 @@ import { TransformersEngine } from './engines/TransformersEngine.js';
 /* ── Build identity ─────────────────────────────────────────────── */
 
 /** Bumped with each behavior change so downloaded reports self-identify. */
-export const HARNESS_VERSION = '1.3.0';
+export const HARNESS_VERSION = '1.4.0';
 
 /* ── Default, user-tunable prompts (Advanced Settings) ──────────── */
 
 export const DEFAULT_EXTRACT_PROMPT = [
   'Extract every loan underwriting condition from the text. A condition is a requirement the borrower must satisfy.',
+  'Merge requirements that belong together into one condition; do not split them, and do not output duplicates.',
+  'Include requirements stated indirectly ("she wants X redone", "we need Y") — not only imperatives.',
   'The text may contain OCR garble (4=a, 0=o, 1=i/l, 3=e, 8=B, £=l — e.g. P8I/PML = PMI, P1F = PIF, 2Ol9 = 2019); read through it and write the conditions in clean English.',
-  'Make each condition complete and standalone — include its documents, amounts, dates and deadlines. No duplicates, no overlapping fragments.',
   'Ignore greetings, signatures, headers and small talk.',
   'Output ONLY a JSON array of strings, one per condition. Output [] if there are none.',
   '',
@@ -36,19 +37,18 @@ export const DEFAULT_EXTRACT_PROMPT = [
 ].join('\n');
 
 export const DEFAULT_TRANSLATE_PROMPT = [
-  'Rewrite the following mortgage underwriting condition as ONE short, warm, plain-English sentence addressed directly to the borrower ("you").',
+  'Rewrite the mortgage underwriting condition below as ONE short, warm, plain-English sentence addressed directly to the borrower ("you").',
   'State the ACTION or DOCUMENT the borrower must provide — never merely describe the situation.',
+  'Keep numbers, dates and dollar amounts exactly as given. Never invent requirements, documents or amounts not present in the condition or context.',
   'Expand jargon and acronyms using this glossary:',
-  '- VOE = Verification of Employment (proof of employment or income, NOT equity).',
-  '- PMI = Private Mortgage Insurance (NOT payment indemnity).',
+  '- VOE = Verification of Employment (proof of employment or income, NOT equity, NOT valuation).',
+  '- PMI = Private Mortgage Insurance (NOT payment indemnity; PML or P8I are garbled forms of PMI).',
   '- YTD = year-to-date (income so far this year).',
   '- Gift letter = signed letter stating a down-payment gift does not need to be repaid.',
   '- Seasoned trail = bank statement proof that gift funds were on deposit for the stated number of days.',
   '- Rent schedule = document listing expected rental income from the property.',
   '- Escrow analysis = recalculation of the monthly tax and insurance escrow payment.',
-  '- OCR garble may appear (4=a, 0=o, 1=i/l, 3=e, 8=B, £=l — e.g. P8I or PML = PMI, P1F = PIF, 2Ol9 = 2019); interpret it silently.',
   'Use the CONTEXT below to resolve what the condition refers to; rely on it whenever the condition alone is ambiguous.',
-  'Keep numbers, dates and dollar amounts exactly as given.',
   'Answer with only that single sentence — no markdown, no quotes, no commentary.',
   '',
   'CONTEXT:',
@@ -345,7 +345,17 @@ export class Harness {
           const raw = await engine.prompt(prompt, { signal, temperature: 0.1 });
           const ms = Math.round(performance.now() - t0);
           report.meta.promptCount += 1;
-          const found = parseConditionsJson(raw).slice(0, maxConditions);
+          let found = parseConditionsJson(raw).slice(0, maxConditions);
+          // One-shot retry: a garbled chunk sometimes yields [] on the first
+          // pass; a second attempt with the same prompt recovers it.
+          if (!found.length && chunk.text.length > 120 && !report.meta.errors.some((e) => e.id === chunk.id)) {
+            emit('EXTRACT', 'INFO', chunk.id, ms, { retry: 'empty result — retrying once' });
+            const t1 = performance.now();
+            const raw2 = await engine.prompt(prompt, { signal, temperature: 0.1 });
+            report.meta.promptCount += 1;
+            found = parseConditionsJson(raw2).slice(0, maxConditions);
+            report.chunks.find((c) => c.id === chunk.id).retry = true;
+          }
           conditions.push(...found.map((c, i) => ({ id: `cond_${conditions.length + i + 1}`, chunkId: chunk.id, condition: c })));
           report.chunks.find((c) => c.id === chunk.id).conditionsFound = found.length;
           emit('EXTRACT', 'SUCCESS', chunk.id, ms, { found: found.length });
@@ -376,8 +386,11 @@ export class Harness {
         // Thread the source chunk through so the translator can resolve
         // pronouns and shorthand against the original wording.
         const srcChunk = cond.chunkId ? chunks.find((c) => c.id === cond.chunkId) : null;
+        // Cap context so the translation prompt stays small enough for
+        // on-device models to attend to the CONDITION itself.
+        const ctx = srcChunk ? srcChunk.text.slice(0, 700) : '(no extra context — rely on the glossary)';
         const prompt = translatePrompt
-          .replaceAll('{{CONTEXT}}', srcChunk ? srcChunk.text : '(no extra context — rely on the glossary)')
+          .replaceAll('{{CONTEXT}}', ctx)
           .replaceAll('{{CONDITION}}', cond.condition);
         const t0 = performance.now();
         try {
