@@ -30,9 +30,23 @@ export const DEFAULT_EXTRACT_PROMPT = [
 
 export const DEFAULT_TRANSLATE_PROMPT = [
   'Rewrite the following mortgage underwriting condition as ONE short, warm, plain-English sentence addressed directly to the borrower ("you").',
-  'Focus on what the borrower must do or provide.',
-  'Expand jargon and acronyms; keep numbers, dates and dollar amounts.',
+  'State the ACTION or DOCUMENT the borrower must provide — never merely describe the situation.',
+  'Expand jargon and acronyms using this glossary:',
+  '- VOE = Verification of Employment (proof of employment or income, NOT equity).',
+  '- PMI = Private Mortgage Insurance (NOT payment indemnity).',
+  '- YTD = year-to-date (income so far this year).',
+  '- Gift letter = signed letter stating a down-payment gift does not need to be repaid.',
+  '- Seasoned trail = bank statement proof that gift funds were on deposit for the stated number of days.',
+  '- Rent schedule = document listing expected rental income from the property.',
+  '- Escrow analysis = recalculation of the monthly tax and insurance escrow payment.',
+  'Use the CONTEXT below to resolve what the condition refers to; rely on it whenever the condition alone is ambiguous.',
+  'Keep numbers, dates and dollar amounts exactly as given.',
   'Answer with only that single sentence — no markdown, no quotes, no commentary.',
+  '',
+  'CONTEXT:',
+  '<<<',
+  '{{CONTEXT}}',
+  '>>>',
   '',
   'CONDITION:',
   '<<<',
@@ -60,6 +74,7 @@ function splitSentences(text) {
 /* ── Stage 0: smart chunking (Lists → Paragraphs → Sentences) ───── */
 
 const LIST_ITEM_RE = /^\s*(?:\d{1,2}[.)\]]|[-*•▪◦])\s+/;
+const EMAIL_HEADER_RE = /^\s*(?:subject|from|to|sent|cc|date)\s*:/i;
 
 /**
  * Split raw input into model-sized chunks using the regex cascade:
@@ -75,7 +90,12 @@ const LIST_ITEM_RE = /^\s*(?:\d{1,2}[.)\]]|[-*•▪◦])\s+/;
 export function smartChunk(text, opts = {}) {
   const minChars = opts.minChars ?? 40;
   const maxChars = opts.maxChars ?? 1200;
-  const src = String(text ?? '').replace(/\r\n?/g, '\n').trim();
+  const raw0 = String(text ?? '').replace(/\r\n?/g, '\n').trim();
+  if (!raw0) return [];
+
+  // Email headers (Subject:/From:/Sent:/CC:) carry no conditions and only
+  // pollute chunks — strip them deterministically before any cascade runs.
+  const src = raw0.split('\n').filter((l) => !EMAIL_HEADER_RE.test(l)).join('\n').trim();
   if (!src) return [];
 
   const lines = src.split('\n');
@@ -165,6 +185,39 @@ export function parseConditionsJson(raw) {
     .filter(Boolean);
 }
 
+/* ── Deterministic routing: structured JSON input ───────────────── */
+
+/**
+ * If the raw input is already structured JSON — an object with a `conditions`
+ * array, or a bare top-level array — return its condition strings so the
+ * harness can skip AI extraction entirely (PRD: deterministic vs unstructured
+ * routing). Returns null for anything that is not parseable structured input.
+ * @param {string} text
+ * @returns {string[]|null}
+ */
+export function parseStructuredConditions(text) {
+  const s = String(text ?? '').trim();
+  if (!s.startsWith('{') && !s.startsWith('[')) return null;
+  let parsed;
+  try { parsed = JSON.parse(s); } catch { return null; }
+  const list = Array.isArray(parsed) ? parsed
+    : (parsed && typeof parsed === 'object' && Array.isArray(parsed.conditions)
+      ? parsed.conditions
+      : null);
+  if (!list) return null;
+  const items = list
+    .map((item) => {
+      if (typeof item === 'string') return item.trim();
+      if (item && typeof item === 'object') {
+        const c = item.condition ?? item.text ?? item.description ?? item.summary;
+        return c == null ? null : String(c).trim();
+      }
+      return String(item).trim();
+    })
+    .filter(Boolean);
+  return items.length ? items : null;
+}
+
 /* ── The Harness ────────────────────────────────────────────────── */
 
 export class Harness {
@@ -180,7 +233,7 @@ export class Harness {
    * @param {string} cfg.text Raw user input.
    * @param {string} [cfg.engineKey] 'nano' | 'webllm' | 'transformers'
    * @param {string} [cfg.extractPrompt] Template with {{MAX}} and {{CHUNK}}.
-   * @param {string} [cfg.translatePrompt] Template with {{CONDITION}}.
+   * @param {string} [cfg.translatePrompt] Template with {{CONDITION}} and {{CONTEXT}}.
    * @param {number} [cfg.maxConditions] Cap per chunk.
    * @param {(evt: object) => void} cfg.progressCallback
    * @param {AbortSignal} [cfg.signal]
@@ -216,6 +269,7 @@ export class Harness {
         successCount: 0,
         errorCount: 0,
         chunkCount: 0,
+        errors: [],
       },
       chunks: [],
       items: [],
@@ -224,16 +278,28 @@ export class Harness {
 
     emit('SYSTEM', 'START', 'pipeline', null, { engine: report.meta.engine });
 
+    // ── Deterministic routing (PRD): structured JSON bypasses AI extraction ──
+    const jsonConditions = parseStructuredConditions(text);
+    report.meta.routing = jsonConditions ? 'json' : 'unstructured';
+
     // ── Chunking (deterministic, no AI) ──
     const tChunk0 = performance.now();
-    const chunks = smartChunk(text);
-    report.meta.chunkCount = chunks.length;
-    report.chunks = chunks.map((c) => ({ ...c }));
-    emit('SYSTEM', 'SUCCESS', `chunking:${chunks.length}`, Math.round(performance.now() - tChunk0),
-      { chunks: chunks.map((c) => c.id) });
+    let chunks = [];
+    let conditions = [];
+    if (jsonConditions) {
+      conditions = jsonConditions.map((c, i) => ({ id: `cond_${i + 1}`, chunkId: null, condition: c }));
+      emit('SYSTEM', 'INFO', 'routing:json', 0, { conditions: jsonConditions.length });
+      emit('SYSTEM', 'SUCCESS', 'chunking:0', Math.round(performance.now() - tChunk0), { chunks: [] });
+    } else {
+      chunks = smartChunk(text);
+      report.meta.chunkCount = chunks.length;
+      report.chunks = chunks.map((c) => ({ ...c }));
+      emit('SYSTEM', 'SUCCESS', `chunking:${chunks.length}`, Math.round(performance.now() - tChunk0),
+        { chunks: chunks.map((c) => c.id) });
 
-    if (!chunks.length) {
-      throw new Error('Nothing to process — the input text is empty.');
+      if (!chunks.length) {
+        throw new Error('Nothing to process — the input text is empty.');
+      }
     }
 
     // ── Engine init ──
@@ -258,8 +324,7 @@ export class Harness {
     const guardAbort = () => { if (signal && signal.aborted) throw new DOMException('Aborted', 'AbortError'); };
 
     try {
-      // ── Stage 1: sequential extraction over chunks ──
-      const conditions = [];
+      // ── Stage 1: sequential extraction over chunks (skipped for JSON routing) ──
       for (const chunk of chunks) {           // SEQUENTIAL: never Promise.all
         guardAbort();
         emit('EXTRACT', 'START', chunk.id, null, { preview: chunk.text.slice(0, 80) });
@@ -278,9 +343,13 @@ export class Harness {
         } catch (err) {
           if (err && err.name === 'AbortError') throw err;
           const ms = Math.round(performance.now() - t0);
+          const msg = String(err.message || err);
           report.meta.promptCount += 1;
           report.meta.errorCount += 1;
-          emit('EXTRACT', 'ERROR', chunk.id, ms, { error: String(err.message || err) });
+          const entry = report.chunks.find((c) => c.id === chunk.id);
+          if (entry) { entry.conditionsFound = 0; entry.error = msg; }
+          report.meta.errors.push({ phase: 'EXTRACT', id: chunk.id, ms, error: msg });
+          emit('EXTRACT', 'ERROR', chunk.id, ms, { error: msg });
         }
       }
 
@@ -295,7 +364,12 @@ export class Harness {
       for (const cond of conditions) {        // SEQUENTIAL: never Promise.all
         guardAbort();
         emit('TRANSLATE', 'START', cond.id, null, { preview: cond.condition.slice(0, 80) });
-        const prompt = translatePrompt.replaceAll('{{CONDITION}}', cond.condition);
+        // Thread the source chunk through so the translator can resolve
+        // pronouns and shorthand against the original wording.
+        const srcChunk = cond.chunkId ? chunks.find((c) => c.id === cond.chunkId) : null;
+        const prompt = translatePrompt
+          .replaceAll('{{CONTEXT}}', srcChunk ? srcChunk.text : '(no extra context — rely on the glossary)')
+          .replaceAll('{{CONDITION}}', cond.condition);
         const t0 = performance.now();
         try {
           const raw = await engine.prompt(prompt, { signal });
@@ -313,13 +387,15 @@ export class Harness {
         } catch (err) {
           if (err && err.name === 'AbortError') throw err;
           const ms = Math.round(performance.now() - t0);
+          const msg = String(err.message || err);
           report.meta.promptCount += 1;
           report.meta.errorCount += 1;
+          report.meta.errors.push({ phase: 'TRANSLATE', id: cond.id, ms, error: msg });
           report.items.push({
             id: cond.id, chunkId: cond.chunkId, condition: cond.condition,
-            need: null, translateMs: ms, error: String(err.message || err),
+            need: null, translateMs: ms, error: msg,
           });
-          emit('TRANSLATE', 'ERROR', cond.id, ms, { error: String(err.message || err) });
+          emit('TRANSLATE', 'ERROR', cond.id, ms, { error: msg });
         }
       }
     } finally {
