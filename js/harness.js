@@ -68,9 +68,19 @@ class MockEngine extends BaseEngine {
     this.#n += 1;
     if (text.includes('TEXT CHUNK:')) {
       const body = text.slice(text.indexOf('<<<') + 3, text.indexOf('>>>'));
-      const parts = splitSentences(body.replace(/\s+/g, ' ').trim());
-      const items = parts.filter((s) => s.length > 12).slice(0, 3);
-      return JSON.stringify(items.length ? items : [body.slice(0, 140)]);
+      // Drop obvious email headers before splitting so demo output looks realistic.
+      const junkLine = /^\s*(subject|from|to|sent|cc)\s*:/i;
+      const cleaned = body
+        .split('\n')
+        .filter((ln) => !junkLine.test(ln))
+        .join(' ')
+        .replace(/\s+/g, ' ')
+        .trim();
+      const greeting = /^(hi|hello|hey|thanks|thank you|regards|jonny|tina)\b/i;
+      const items = splitSentences(cleaned)
+        .filter((s) => s.length > 12 && !greeting.test(s))
+        .slice(0, 3);
+      return JSON.stringify(items.length ? items : [cleaned.slice(0, 140) || '(no content)']);
     }
     const body = text.slice(text.indexOf('<<<') + 3, text.indexOf('>>>')).replace(/\s+/g, ' ').trim();
     const lead = body.split(/[.;]/)[0].slice(0, 60);

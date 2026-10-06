@@ -175,7 +175,7 @@ function onPipelineEvent(evt) {
     if (phase === 'EXTRACT') {
       finishWaterfallRow(id, ms, `+${data.found} condition${data.found === 1 ? '' : 's'}`);
     } else if (phase === 'TRANSLATE') {
-      finishWaterfallRow(id, ms, `${ms}ms`);
+      finishWaterfallRow(id, ms, '');
       appendResultCard({ id, condition: lastConditionFor(id), need: data.need });
     }
   } else if (status === 'ERROR') {
