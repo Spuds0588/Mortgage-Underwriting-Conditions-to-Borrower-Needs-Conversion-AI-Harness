@@ -241,7 +241,7 @@ export class Harness {
     }
 
     // ── Engine init ──
-    const EngineCtor = demoMode ? MockEngine : ENGINES[engineKey];
+    const EngineCtor = ENGINES[engineKey];
     if (!EngineCtor) throw new Error(`Unknown engine key: ${engineKey}`);
     const engine = new EngineCtor();
 
