@@ -30,24 +30,40 @@ export class TransformersEngine extends BaseEngine {
   /**
    * Load the ONNX model (first call downloads ~350–500 MB; cached afterwards).
    * @param {(msg: string) => void} [progressCallback]
+   * @param {{signal?: AbortSignal}} [opts]
    */
-  async init(progressCallback) {
-    const say = (msg) => { if (typeof progressCallback === 'function') progressCallback(msg); };
+  async init(progressCallback, opts = {}) {
+    const say = (msg) => {
+      if (opts.signal && opts.signal.aborted) throw new DOMException('Aborted', 'AbortError');
+      if (typeof progressCallback === 'function') progressCallback(msg);
+    };
 
-    say('Loading Transformers.js runtime from CDN…');
+    say('Loading Transformers.js runtime from CDN… (~350–500 MB model download on first run — may take several minutes; cached after)');
     const { pipeline, env } = await import('https://cdn.jsdelivr.net/npm/@huggingface/transformers@3.7.5');
     env.allowLocalModels = false;
 
-    const progress = (p) => {
-      if (p && p.status === 'progress' && p.file) {
-        say(`${p.file}: ${Math.round(p.progress || 0)}%`);
-      } else if (p && p.status === 'ready') {
-        say('ONNX model ready.');
-      }
-    };
+    // Progress ticks fire hundreds of times per file — flood the waterfall
+    // unless throttled. Announce per file + every 5% (incl. 100%).
+    const progress = (() => {
+      let lastFile = '';
+      let lastPct = -100;
+      return (p) => {
+        if (p && p.status === 'progress' && p.file) {
+          const pct = Math.round(p.progress || 0);
+          if (p.file !== lastFile || pct - lastPct >= 5 || pct === 100) {
+            lastFile = p.file;
+            lastPct = pct;
+            say(`${p.file}: ${pct}%`);
+          }
+        } else if (p && p.status === 'ready') {
+          say('ONNX model ready.');
+        }
+      };
+    })();
 
     // Prefer WebGPU; fall back to WASM on any failure.
     for (const device of ['webgpu', 'wasm']) {
+      if (opts.signal && opts.signal.aborted) throw new DOMException('Aborted', 'AbortError');
       try {
         say(`Trying device: ${device}…`);
         this.#pipe = await pipeline('text-generation', MODEL_ID, {

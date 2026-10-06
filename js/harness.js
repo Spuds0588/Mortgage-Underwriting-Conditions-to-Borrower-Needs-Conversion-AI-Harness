@@ -18,7 +18,7 @@ import { TransformersEngine } from './engines/TransformersEngine.js';
 /* ── Build identity ─────────────────────────────────────────────── */
 
 /** Bumped with each behavior change so downloaded reports self-identify. */
-export const HARNESS_VERSION = '1.5.0';
+export const HARNESS_VERSION = '1.5.1';
 
 /* ── Default, user-tunable prompts (Advanced Settings) ──────────── */
 
@@ -363,8 +363,10 @@ export class Harness {
       if (!await engine.isAvailable()) {
         throw new Error(`Engine "${engine.name}" is not supported in this environment (no compatible backend found).`);
       }
-      await engine.init(sayInit);
+      await engine.init(sayInit, { signal });
     } catch (err) {
+      // User aborted mid-init (Stop during a model download): re-throw so
+      // the pipeline ends immediately, with no fallback attempt.
       if (signal && signal.aborted) throw err;
       if (!FALLBACKS[engineKey]) {
         throw new Error(
@@ -380,7 +382,7 @@ export class Harness {
       engine = new FallbackCtor();
       report.meta.modelFallback = engineKey;
       report.meta.engine = engine.name;
-      await engine.init(sayInit);
+      await engine.init(sayInit, { signal });
     }
     report.meta.initMs = Math.round(performance.now() - tInit0);
     report.meta.model = engine.model || engine.device || engine.name;

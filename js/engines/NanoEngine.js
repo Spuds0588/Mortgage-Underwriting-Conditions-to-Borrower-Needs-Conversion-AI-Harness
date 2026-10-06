@@ -43,9 +43,15 @@ export class NanoEngine extends BaseEngine {
    * Create the Nano session. If the model is downloadable-but-absent,
    * attempt a user-gesture-gated download and wait for completion.
    * @param {(msg: string) => void} [progressCallback]
+   * @param {{signal?: AbortSignal}} [opts]
    */
-  async init(progressCallback) {
-    const say = (msg) => { if (typeof progressCallback === 'function') progressCallback(msg); };
+  async init(progressCallback, opts = {}) {
+    // Abort checkpoint before any message — lets Stop cancel a long
+    // Nano download mid-init.
+    const say = (msg) => {
+      if (opts.signal && opts.signal.aborted) throw new DOMException('Aborted', 'AbortError');
+      if (typeof progressCallback === 'function') progressCallback(msg);
+    };
 
     const api = resolveApi();
     if (!api) throw new Error('NanoEngine: Prompt API not found (need Chrome with Gemini Nano enabled).');
@@ -81,6 +87,7 @@ export class NanoEngine extends BaseEngine {
     try {
       this.#session = await api.create(params);
     } catch (err) {
+      if (opts.signal && opts.signal.aborted) throw new DOMException('Aborted', 'AbortError');
       // Older flag builds reject { initialPrompts }; retry minimal.
       try {
         say('Session create with system prompt failed — retrying minimal session…');
@@ -117,7 +124,7 @@ export class NanoEngine extends BaseEngine {
     }
   }
 
-  /** Destroy the session and free memory. */
+  /** Destroy the session and free memory. Safe to call during init(). */
   destroy() {
     try {
       if (this.#abort) this.#abort.abort();

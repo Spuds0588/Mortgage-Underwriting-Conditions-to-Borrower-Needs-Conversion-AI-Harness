@@ -46,9 +46,13 @@ export class WebLlmEngine extends BaseEngine {
   /**
    * Load the model (first call downloads ~500 MB; cached afterwards).
    * @param {(msg: string) => void} [progressCallback]
+   * @param {{signal?: AbortSignal}} [opts]
    */
-  async init(progressCallback) {
-    const say = (msg) => { if (typeof progressCallback === 'function') progressCallback(msg); };
+  async init(progressCallback, opts = {}) {
+    const say = (msg) => {
+      if (opts.signal && opts.signal.aborted) throw new DOMException('Aborted', 'AbortError');
+      if (typeof progressCallback === 'function') progressCallback(msg);
+    };
 
     say('Loading WebLLM runtime from CDN…');
     const webllm = await import('https://esm.run/@mlc-ai/web-llm');
@@ -60,12 +64,18 @@ export class WebLlmEngine extends BaseEngine {
       ? (list.includes('Qwen2.5-0.5B-Instruct-q4f32_1-MLC') ? 'Qwen2.5-0.5B-Instruct-q4f32_1-MLC' : preferred)
       : preferred;
     this.model = modelId;
-    say(`WebLLM model: ${this.model} (first run downloads weights, then cached)`);
+    say(`WebLLM model: ${this.model} (~350–500 MB download on first run — may take several minutes; cached after)`);
 
+    // Init reports fire per fetch-tick — throttle to ~10% steps so the
+    // waterfall stays readable (always emit 0% and 100%).
+    let lastEmitPct = -100;
     this.#engine = await webllm.CreateMLCEngine(this.model, {
       initProgressCallback: (report) => {
-        // report.text looks like "Fetching param cache[12%]: 58/470 finished"
-        if (report && report.text) say(String(report.text).slice(0, 140));
+        const pct = Math.round((report && typeof report.progress === 'number' ? report.progress : 0) * 100);
+        if (pct - lastEmitPct >= 10 || pct === 100) {
+          lastEmitPct = pct;
+          say(`Downloading WebLLM weights: ${pct}%${report && report.text ? ` — ${String(report.text).slice(0, 80)}` : ''}`);
+        }
       },
     });
     say('WebLLM engine ready.');
