@@ -34,7 +34,6 @@ const els = {
   extractPrompt: $('setting-extract-prompt'),
   translatePrompt: $('setting-translate-prompt'),
   maxConditions: $('setting-max-conditions'),
-  demoMode: $('setting-demo-mode'),
   resetPromptsBtn: $('reset-prompts-btn'),
 };
 
@@ -58,7 +57,7 @@ async function checkEnvironment() {
   } else {
     setEngineStatus('error', 'Gemini Nano: not detected');
     els.gatekeeper.classList.remove('hidden');
-    els.engineHint.textContent = 'Nano unavailable here — enable Chrome flags above, or use Demo mode in Advanced Settings.';
+    els.engineHint.textContent = 'Nano unavailable here — pick the WebLLM or Transformers.js engine for real local inference.';
   }
 }
 
@@ -103,7 +102,6 @@ function loadAdvancedDefaults() {
   els.extractPrompt.value = DEFAULT_EXTRACT_PROMPT;
   els.translatePrompt.value = DEFAULT_TRANSLATE_PROMPT;
   els.maxConditions.value = '10';
-  els.demoMode.checked = false;
 }
 els.resetPromptsBtn.addEventListener('click', () => {
   els.extractPrompt.value = DEFAULT_EXTRACT_PROMPT;
@@ -130,7 +128,6 @@ async function runPipeline() {
     const report = await harness.process({
       text,
       engineKey: els.engineSelect.value,
-      demoMode: els.demoMode.checked,
       extractPrompt: els.extractPrompt.value || DEFAULT_EXTRACT_PROMPT,
       translatePrompt: els.translatePrompt.value || DEFAULT_TRANSLATE_PROMPT,
       maxConditions: clampInt(els.maxConditions.value, 1, 20, 10),

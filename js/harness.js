@@ -11,7 +11,6 @@
  * on window.ai. Inference is ALWAYS sequential (for...of, never Promise.all)
  * to keep hardware load sane on low-memory devices.
  */
-import { BaseEngine } from './engines/BaseEngine.js';
 import { NanoEngine } from './engines/NanoEngine.js';
 import { WebLlmEngine } from './engines/WebLlmEngine.js';
 import { TransformersEngine } from './engines/TransformersEngine.js';
@@ -53,56 +52,7 @@ export const ENGINES = {
   transformers: TransformersEngine,
 };
 
-/* ── Demo mode: in-memory mock engine (works without Gemini Nano) ── */
-
-class MockEngine extends BaseEngine {
-  name = 'mock';
-  #n = 0;
-
-  async isAvailable() { return true; }
-  async init(progressCallback) {
-    if (typeof progressCallback === 'function') progressCallback('Mock engine ready (demo mode).');
-  }
-  async prompt(text, opts = {}) {
-    await delay(60 + Math.floor(Math.random() * 120), opts.signal);
-    this.#n += 1;
-    if (text.includes('TEXT CHUNK:')) {
-      const body = text.slice(text.indexOf('<<<') + 3, text.indexOf('>>>'));
-      // Drop obvious email headers before splitting so demo output looks realistic.
-      const junkLine = /^\s*(subject|from|to|sent|cc)\s*:/i;
-      const cleaned = body
-        .split('\n')
-        .filter((ln) => !junkLine.test(ln))
-        .join(' ')
-        .replace(/\s+/g, ' ')
-        .trim();
-      const greeting = /^(hi|hello|hey|thanks|thank you|regards|jonny|tina)\b/i;
-      const items = splitSentences(cleaned)
-        .filter((s) => s.length > 12 && !greeting.test(s))
-        .slice(0, 3);
-      // Honest empty answer when nothing in the chunk qualifies — same as Nano would return.
-      return JSON.stringify(items);
-    }
-    const body = text.slice(text.indexOf('<<<') + 3, text.indexOf('>>>')).replace(/\s+/g, ' ').trim();
-    const lead = body.split(/[.;]/)[0].slice(0, 60);
-    return `Could you please send the documents for "${lead}" so we can keep your loan moving? (demo)`;
-  }
-  destroy() {}
-}
-
 /* ── Small utilities ────────────────────────────────────────────── */
-
-function delay(ms, signal) {
-  return new Promise((resolve, reject) => {
-    if (signal && signal.aborted) return reject(new DOMException('Aborted', 'AbortError'));
-    const t = setTimeout(() => { signal?.removeEventListener('abort', onAbort); resolve(); }, ms);
-    function onAbort() {
-      clearTimeout(t);
-      reject(new DOMException('Aborted', 'AbortError'));
-    }
-    signal?.addEventListener('abort', onAbort, { once: true });
-  });
-}
 
 function splitSentences(text) {
   return String(text)
@@ -233,7 +183,6 @@ export class Harness {
    * @param {object} cfg
    * @param {string} cfg.text Raw user input.
    * @param {string} [cfg.engineKey] 'nano' | 'webllm' | 'transformers'
-   * @param {boolean} [cfg.demoMode] Use the in-memory mock engine.
    * @param {string} [cfg.extractPrompt] Template with {{MAX}} and {{CHUNK}}.
    * @param {string} [cfg.translatePrompt] Template with {{CONDITION}}.
    * @param {number} [cfg.maxConditions] Cap per chunk.
@@ -245,7 +194,6 @@ export class Harness {
     const {
       text,
       engineKey = 'nano',
-      demoMode = false,
       extractPrompt = DEFAULT_EXTRACT_PROMPT,
       translatePrompt = DEFAULT_TRANSLATE_PROMPT,
       maxConditions = 10,
@@ -266,7 +214,7 @@ export class Harness {
       meta: {
         startedAt,
         finishedAt: null,
-        engine: demoMode ? 'mock (demo mode)' : engineKey,
+        engine: engineKey,
         totalMs: null,
         promptCount: 0,
         successCount: 0,
@@ -299,11 +247,11 @@ export class Harness {
 
     emit('SYSTEM', 'INFO', `engine:${engine.name}`);
     const available = await engine.isAvailable();
-    if (!available && !demoMode) {
+    if (!available) {
       throw new Error(
         `Engine "${engine.name}" is not available in this environment. ` +
-        'Enable Gemini Nano via chrome://flags/#prompt-api-for-gemini-nano and chrome://components, ' +
-        'or turn on Demo mode in Advanced Settings.',
+        'For Gemini Nano: enable it via chrome://flags/#prompt-api-for-gemini-nano and chrome://components ' +
+        '(Windows/macOS Chrome). For broad compatibility, select the WebLLM or Transformers.js engine.',
       );
     }
     await engine.init((msg) => emit('SYSTEM', 'INFO', `engine:${engine.name}`, null, { message: msg }));
