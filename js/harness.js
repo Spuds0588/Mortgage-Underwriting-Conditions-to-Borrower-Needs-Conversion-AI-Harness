@@ -19,6 +19,8 @@ import { TransformersEngine } from './engines/TransformersEngine.js';
 
 export const DEFAULT_EXTRACT_PROMPT = [
   'Extract every loan underwriting condition from the text. A condition is a requirement the borrower must satisfy.',
+  'The text may contain OCR garble (4=a, 0=o, 1=i/l, 3=e, 8=B, £=l — e.g. P8I/PML = PMI, P1F = PIF, 2Ol9 = 2019); read through it and write the conditions in clean English.',
+  'Make each condition complete and standalone — include its documents, amounts, dates and deadlines. No duplicates, no overlapping fragments.',
   'Ignore greetings, signatures, headers and small talk.',
   'Output ONLY a JSON array of strings, one per condition. Output [] if there are none.',
   '',
@@ -39,6 +41,7 @@ export const DEFAULT_TRANSLATE_PROMPT = [
   '- Seasoned trail = bank statement proof that gift funds were on deposit for the stated number of days.',
   '- Rent schedule = document listing expected rental income from the property.',
   '- Escrow analysis = recalculation of the monthly tax and insurance escrow payment.',
+  '- OCR garble may appear (4=a, 0=o, 1=i/l, 3=e, 8=B, £=l — e.g. P8I or PML = PMI, P1F = PIF, 2Ol9 = 2019); interpret it silently.',
   'Use the CONTEXT below to resolve what the condition refers to; rely on it whenever the condition alone is ambiguous.',
   'Keep numbers, dates and dollar amounts exactly as given.',
   'Answer with only that single sentence — no markdown, no quotes, no commentary.',
