@@ -15,6 +15,11 @@ import { NanoEngine } from './engines/NanoEngine.js';
 import { WebLlmEngine } from './engines/WebLlmEngine.js';
 import { TransformersEngine } from './engines/TransformersEngine.js';
 
+/* ── Build identity ─────────────────────────────────────────────── */
+
+/** Bumped with each behavior change so downloaded reports self-identify. */
+export const HARNESS_VERSION = '1.3.0';
+
 /* ── Default, user-tunable prompts (Advanced Settings) ──────────── */
 
 export const DEFAULT_EXTRACT_PROMPT = [
@@ -266,6 +271,7 @@ export class Harness {
       meta: {
         startedAt,
         finishedAt: null,
+        version: HARNESS_VERSION,
         engine: engineKey,
         totalMs: null,
         promptCount: 0,

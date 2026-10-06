@@ -4,7 +4,7 @@
  * One-way flow only: app.js calls harness.process() and maps the emitted
  * event objects directly onto the DOM (no two-way data binding).
  */
-import { harness, smartChunk, DEFAULT_EXTRACT_PROMPT, DEFAULT_TRANSLATE_PROMPT } from './harness.js';
+import { harness, smartChunk, DEFAULT_EXTRACT_PROMPT, DEFAULT_TRANSLATE_PROMPT, HARNESS_VERSION } from './harness.js';
 import { NanoEngine } from './engines/NanoEngine.js';
 import { SAMPLE_JSON, SAMPLE_EMAIL, SAMPLE_OCR } from './samples.js';
 
@@ -38,6 +38,14 @@ const els = {
 };
 
 const SAMPLES = { json: SAMPLE_JSON, email: SAMPLE_EMAIL, ocr: SAMPLE_OCR };
+
+/* ── Build identity: makes stale-cache runs self-evident ────────── */
+const footerP = document.querySelector('.app-footer p');
+if (footerP) {
+  const v = document.createElement('span');
+  v.textContent = ` · harness v${HARNESS_VERSION}`;
+  footerP.appendChild(v);
+}
 
 /* ── State ──────────────────────────────────────────────────────── */
 let controller = null;      // AbortController for the running pipeline
