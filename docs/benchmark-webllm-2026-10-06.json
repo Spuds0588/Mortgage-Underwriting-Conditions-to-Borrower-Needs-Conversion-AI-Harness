@@ -1,0 +1,251 @@
+{
+  "engine": "webllm",
+  "gpu": {
+    "vendor": "intel",
+    "architecture": "gen-9"
+  },
+  "env": {
+    "hardwareConcurrency": 8,
+    "deviceMemoryGB": 16,
+    "ua": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/153.0.0.0 Safari/537.36"
+  },
+  "runs": [
+    {
+      "label": "cold (includes model download if not cached)",
+      "sample": "email",
+      "meta": {
+        "startedAt": "2026-10-06T14:15:57.444Z",
+        "finishedAt": "2026-10-06T14:16:59.720Z",
+        "engine": "webllm",
+        "totalMs": 62276,
+        "promptCount": 20,
+        "successCount": 12,
+        "errorCount": 0,
+        "chunkCount": 8,
+        "initMs": 1942,
+        "model": "Qwen2.5-0.5B-Instruct-q4f16_1-MLC"
+      },
+      "items": [
+        {
+          "id": "cond_1",
+          "translateMs": 2907,
+          "needLen": 127,
+          "error": null
+        },
+        {
+          "id": "cond_2",
+          "translateMs": 2748,
+          "needLen": 76,
+          "error": null
+        },
+        {
+          "id": "cond_3",
+          "translateMs": 2577,
+          "needLen": 79,
+          "error": null
+        },
+        {
+          "id": "cond_4",
+          "translateMs": 1710,
+          "needLen": 37,
+          "error": null
+        },
+        {
+          "id": "cond_5",
+          "translateMs": 2471,
+          "needLen": 93,
+          "error": null
+        },
+        {
+          "id": "cond_6",
+          "translateMs": 1864,
+          "needLen": 46,
+          "error": null
+        },
+        {
+          "id": "cond_7",
+          "translateMs": 2343,
+          "needLen": 97,
+          "error": null
+        },
+        {
+          "id": "cond_8",
+          "translateMs": 3198,
+          "needLen": 83,
+          "error": null
+        },
+        {
+          "id": "cond_9",
+          "translateMs": 1643,
+          "needLen": 39,
+          "error": null
+        },
+        {
+          "id": "cond_10",
+          "translateMs": 3645,
+          "needLen": 124,
+          "error": null
+        },
+        {
+          "id": "cond_11",
+          "translateMs": 2848,
+          "needLen": 116,
+          "error": null
+        },
+        {
+          "id": "cond_12",
+          "translateMs": 2539,
+          "needLen": 52,
+          "error": null
+        }
+      ]
+    },
+    {
+      "label": "warm-1",
+      "sample": "email",
+      "meta": {
+        "startedAt": "2026-10-06T14:17:02.533Z",
+        "finishedAt": "2026-10-06T14:18:05.416Z",
+        "engine": "webllm",
+        "totalMs": 62883,
+        "promptCount": 20,
+        "successCount": 12,
+        "errorCount": 0,
+        "chunkCount": 8,
+        "initMs": 1327,
+        "model": "Qwen2.5-0.5B-Instruct-q4f16_1-MLC"
+      },
+      "items": [
+        {
+          "id": "cond_1",
+          "translateMs": 2332,
+          "needLen": 98,
+          "error": null
+        },
+        {
+          "id": "cond_2",
+          "translateMs": 2416,
+          "needLen": 70,
+          "error": null
+        },
+        {
+          "id": "cond_3",
+          "translateMs": 1713,
+          "needLen": 37,
+          "error": null
+        },
+        {
+          "id": "cond_4",
+          "translateMs": 3569,
+          "needLen": 140,
+          "error": null
+        },
+        {
+          "id": "cond_5",
+          "translateMs": 1554,
+          "needLen": 36,
+          "error": null
+        },
+        {
+          "id": "cond_6",
+          "translateMs": 2495,
+          "needLen": 76,
+          "error": null
+        },
+        {
+          "id": "cond_7",
+          "translateMs": 3476,
+          "needLen": 137,
+          "error": null
+        },
+        {
+          "id": "cond_8",
+          "translateMs": 2416,
+          "needLen": 65,
+          "error": null
+        },
+        {
+          "id": "cond_9",
+          "translateMs": 3115,
+          "needLen": 77,
+          "error": null
+        },
+        {
+          "id": "cond_10",
+          "translateMs": 1879,
+          "needLen": 60,
+          "error": null
+        },
+        {
+          "id": "cond_11",
+          "translateMs": 3343,
+          "needLen": 88,
+          "error": null
+        },
+        {
+          "id": "cond_12",
+          "translateMs": 3563,
+          "needLen": 118,
+          "error": null
+        }
+      ]
+    },
+    {
+      "label": "warm-2",
+      "sample": "ocr",
+      "meta": {
+        "startedAt": "2026-10-06T14:18:07.608Z",
+        "finishedAt": "2026-10-06T14:18:38.655Z",
+        "engine": "webllm",
+        "totalMs": 31047,
+        "promptCount": 10,
+        "successCount": 4,
+        "errorCount": 0,
+        "chunkCount": 6,
+        "initMs": 1341,
+        "model": "Qwen2.5-0.5B-Instruct-q4f16_1-MLC"
+      },
+      "items": [
+        {
+          "id": "cond_1",
+          "translateMs": 2809,
+          "needLen": 93,
+          "error": null
+        },
+        {
+          "id": "cond_2",
+          "translateMs": 2676,
+          "needLen": 85,
+          "error": null
+        },
+        {
+          "id": "cond_3",
+          "translateMs": 2419,
+          "needLen": 65,
+          "error": null
+        },
+        {
+          "id": "cond_4",
+          "translateMs": 2508,
+          "needLen": 71,
+          "error": null
+        }
+      ]
+    }
+  ],
+  "sampleOutputs": [
+    {
+      "cond": "w4it 3O d4ys t0 pull 4ny Escr0w reserves fr0m p4r p4yment",
+      "need": "You must be able to demonstrate a stable and growing earnings record for the past four years."
+    },
+    {
+      "cond": "1t, w1ll 4ll0w the P1F premium pl4n credit & 2 m0nths P8I premium 1n escr0w reserves (see n0tes f0r reserves)",
+      "need": "You must provide the necessary funds for both your principal loan and escrow account."
+    },
+    {
+      "cond": "J0hn Alvarez",
+      "need": "You must provide a down payment of at least 20% on your property."
+    }
+  ],
+  "capturedAt": "2026-10-06T14:18:42.638Z"
+}
