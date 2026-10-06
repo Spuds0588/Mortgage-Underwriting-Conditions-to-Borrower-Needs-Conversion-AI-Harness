@@ -18,7 +18,7 @@ import { TransformersEngine } from './engines/TransformersEngine.js';
 /* ── Build identity ─────────────────────────────────────────────── */
 
 /** Bumped with each behavior change so downloaded reports self-identify. */
-export const HARNESS_VERSION = '1.4.2';
+export const HARNESS_VERSION = '1.5.0';
 
 /* ── Default, user-tunable prompts (Advanced Settings) ──────────── */
 
@@ -66,6 +66,9 @@ export const DEFAULT_TRANSLATE_PROMPT = [
 ].join('\n');
 
 /* ── Engine registry (hot-swappable via the adapter contract) ───── */
+/* Engines that can run inside ANY modern browser download their weights
+ * from public CDNs on first init and are cached by the browser; Nano is
+ * preinstalled on supported Chrome builds. */
 
 export const ENGINES = {
   nano: NanoEngine,
@@ -250,7 +253,18 @@ export function filterVagueFragments(list) {
   return { kept, dropped };
 }
 
-/* ── The Harness ────────────────────────────────────────────────── */
+/* ── Engine capability chain ────────────────────────────────────── */
+
+/**
+ * Capability chain per engine: if an engine cannot run here despite being
+ * selectable (lightweight check), init falls back to the next engine that
+ * CAN download-and-run anywhere — never to one with equal requirements.
+ */
+const FALLBACKS = {
+  nano: 'webllm',      // Next try: WebGPU backend.
+  webllm: 'transformers', // Has a WASM backend that runs everywhere.
+  // 'transformers' is terminal: it runs on WASM even without WebGPU.
+};
 
 export class Harness {
   /** Master telemetry object for the current/last run. @type {object|null} */
@@ -339,19 +353,35 @@ export class Harness {
     // ── Engine init ──
     const EngineCtor = ENGINES[engineKey];
     if (!EngineCtor) throw new Error(`Unknown engine key: ${engineKey}`);
-    const engine = new EngineCtor();
+    let engine = new EngineCtor();
 
     emit('SYSTEM', 'INFO', `engine:${engine.name}`);
     const tInit0 = performance.now();
-    const available = await engine.isAvailable();
-    if (!available) {
-      throw new Error(
-        `Engine "${engine.name}" is not available in this environment. ` +
-        'For Gemini Nano: enable it via chrome://flags/#prompt-api-for-gemini-nano and chrome://components ' +
-        '(Windows/macOS Chrome). For broad compatibility, select the WebLLM or Transformers.js engine.',
-      );
+    const sayInit = (msg) => emit('SYSTEM', 'INFO', `engine:${engine.name}`, null, { message: msg });
+
+    try {
+      if (!await engine.isAvailable()) {
+        throw new Error(`Engine "${engine.name}" is not supported in this environment (no compatible backend found).`);
+      }
+      await engine.init(sayInit);
+    } catch (err) {
+      if (signal && signal.aborted) throw err;
+      if (!FALLBACKS[engineKey]) {
+        throw new Error(
+          `Engine "${engine.name}" is not available in this environment. ` +
+          'For Gemini Nano: enable it via chrome://flags/#prompt-api-for-gemini-nano and chrome://components ' +
+          '(Windows/macOS Chrome). For broad compatibility, select the WebLLM or Transformers.js engine.',
+        );
+      }
+      const next = FALLBACKS[engineKey];
+      sayInit(`${engine.name} unavailable (${String(err.message || err).slice(0, 120)}) — falling back to ${next}…`);
+      emit('SYSTEM', 'INFO', `fallback:${engineKey}_to_${next}`);
+      const FallbackCtor = ENGINES[next];
+      engine = new FallbackCtor();
+      report.meta.modelFallback = engineKey;
+      report.meta.engine = engine.name;
+      await engine.init(sayInit);
     }
-    await engine.init((msg) => emit('SYSTEM', 'INFO', `engine:${engine.name}`, null, { message: msg }));
     report.meta.initMs = Math.round(performance.now() - tInit0);
     report.meta.model = engine.model || engine.device || engine.name;
 

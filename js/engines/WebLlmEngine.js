@@ -32,7 +32,11 @@ export class WebLlmEngine extends BaseEngine {
   async isAvailable() {
     try {
       if (!navigator.gpu) return false;
-      const adapter = await navigator.gpu.requestAdapter();
+      // Any usable adapter counts — including a SwiftShader/CPU one. The
+      // q4f16_1 quantization also works on adapters without shader-f16.
+      // requestAdapter(this) without options returns a compatible adapter
+      // strictly faster than asking for high-performance upfront.
+      const adapter = await navigator.gpu.requestAdapter({ powerPreference: 'low-power' });
       return !!adapter;
     } catch {
       return false;
@@ -50,7 +54,12 @@ export class WebLlmEngine extends BaseEngine {
     const webllm = await import('https://esm.run/@mlc-ai/web-llm');
 
     const list = webllm.prebuiltAppConfig?.model_list?.map((m) => m.model_id) || [];
-    this.model = MODEL_CANDIDATES.find((id) => list.includes(id)) || MODEL_CANDIDATES[0];
+    // Prefer 4-bit fp16; fall back to a q4f32 variant on module-load failure.
+    const preferred = MODEL_CANDIDATES.find((id) => list.includes(id)) || MODEL_CANDIDATES[0];
+    const modelId = preferred.includes('q4f16_1')
+      ? (list.includes('Qwen2.5-0.5B-Instruct-q4f32_1-MLC') ? 'Qwen2.5-0.5B-Instruct-q4f32_1-MLC' : preferred)
+      : preferred;
+    this.model = modelId;
     say(`WebLLM model: ${this.model} (first run downloads weights, then cached)`);
 
     this.#engine = await webllm.CreateMLCEngine(this.model, {

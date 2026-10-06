@@ -99,11 +99,16 @@ function refreshInputMeta() {
 }
 
 /* ── Engine selection ───────────────────────────────────────────── */
-els.engineSelect.addEventListener('change', () => {
-  if (els.engineSelect.value === 'nano') {
-    els.engineHint.textContent = 'Runs entirely on-device. Your data never leaves this machine.';
-  }
-});
+const ENGINE_HINTS = {
+  nano: 'Preinstalled on supported Chrome builds — zero download, runs fully on-device.',
+  webllm: 'Downloads Qwen2.5-0.5B (WebGPU) from a public CDN on first run (~350–500 MB), then cached by your browser for instant reuse. All inference stays on-device.',
+  transformers: 'Downloads Qwen2.5-0.5B (ONNX) from a public CDN on first run (~350–500 MB), then cached by your browser. Works on Windows, macOS and Linux Chrome/Edge — with or without WebGPU.',
+};
+function refreshEngineHint() {
+  els.engineHint.textContent = ENGINE_HINTS[els.engineSelect.value] || '';
+}
+els.engineSelect.addEventListener('change', refreshEngineHint);
+refreshEngineHint();
 
 /* ── Advanced settings ──────────────────────────────────────────── */
 function loadAdvancedDefaults() {
@@ -304,7 +309,7 @@ function showSummary(meta, started) {
   const secs = ((meta.totalMs ?? wallMs) / 1000).toFixed(1);
   els.runSummary.textContent =
     `${meta.chunkCount} chunks · ${meta.promptCount} prompts · ${meta.successCount} ok · ` +
-    `${meta.errorCount} errors · ${secs}s`;
+    `${meta.errorCount} errors · ${secs}s · engine: ${meta.engine}${meta.model && meta.model !== meta.engine ? ` (${meta.model})` : ''}`;
   els.runSummary.classList.remove('hidden');
   els.reportRow.classList.remove('hidden');
 }
