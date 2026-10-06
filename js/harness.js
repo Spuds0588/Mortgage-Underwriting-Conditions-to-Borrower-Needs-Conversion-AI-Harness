@@ -80,7 +80,8 @@ class MockEngine extends BaseEngine {
       const items = splitSentences(cleaned)
         .filter((s) => s.length > 12 && !greeting.test(s))
         .slice(0, 3);
-      return JSON.stringify(items.length ? items : [cleaned.slice(0, 140) || '(no content)']);
+      // Honest empty answer when nothing in the chunk qualifies — same as Nano would return.
+      return JSON.stringify(items);
     }
     const body = text.slice(text.indexOf('<<<') + 3, text.indexOf('>>>')).replace(/\s+/g, ' ').trim();
     const lead = body.split(/[.;]/)[0].slice(0, 60);
