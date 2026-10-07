@@ -18,7 +18,7 @@ import { TransformersEngine } from './engines/TransformersEngine.js';
 /* ── Build identity ─────────────────────────────────────────────── */
 
 /** Bumped with each behavior change so downloaded reports self-identify. */
-export const HARNESS_VERSION = '1.5.1';
+export const HARNESS_VERSION = '1.6.0';
 
 /* ── Default, user-tunable prompts (Advanced Settings) ──────────── */
 
@@ -278,6 +278,11 @@ export class Harness {
    * @param {object} cfg
    * @param {string} cfg.text Raw user input.
    * @param {string} [cfg.engineKey] 'nano' | 'webllm' | 'transformers'
+   * @param {object} [cfg.engineInstance] Pre-initialized engine (from the UI's
+   *        ⤓ Download step). Skips availability/init and is NEVER destroyed
+   *        here — the caller owns the cached instance.
+   * @param {boolean} [cfg.noFallback] Forbid the automatic engine fallback
+   *        chain (used by the UI so Run never downloads models silently).
    * @param {string} [cfg.extractPrompt] Template with {{MAX}} and {{CHUNK}}.
    * @param {string} [cfg.translatePrompt] Template with {{CONDITION}} and {{CONTEXT}}.
    * @param {number} [cfg.maxConditions] Cap per chunk.
@@ -289,6 +294,8 @@ export class Harness {
     const {
       text,
       engineKey = 'nano',
+      engineInstance = null,
+      noFallback = false,
       extractPrompt = DEFAULT_EXTRACT_PROMPT,
       translatePrompt = DEFAULT_TRANSLATE_PROMPT,
       maxConditions = 10,
@@ -300,7 +307,12 @@ export class Harness {
       const evt = { phase, status, id, ms, data };
       if (typeof progressCallback === 'function') progressCallback(evt);
       const icon = status === 'START' ? '🚀' : status === 'SUCCESS' ? '✅' : status === 'ERROR' ? '❌' : 'ℹ️';
-      console.log(`${icon} [${phase}/${status}] ${id}${ms != null ? ` (${ms}ms)` : ''}`);
+      // Surface the human-readable payload (engine init chatter, item
+      // errors) in the console too — bare event ids made engine-init
+      // progress look like an unexplained flood.
+      const detail = data && data.message != null ? ` — ${data.message}`
+        : data && data.error != null ? ` — ${data.error}` : '';
+      console.log(`${icon} [${phase}/${status}] ${id}${ms != null ? ` (${ms}ms)` : ''}${detail}`);
       return evt;
     };
 
@@ -351,38 +363,56 @@ export class Harness {
     }
 
     // ── Engine init ──
-    const EngineCtor = ENGINES[engineKey];
-    if (!EngineCtor) throw new Error(`Unknown engine key: ${engineKey}`);
-    let engine = new EngineCtor();
-
-    emit('SYSTEM', 'INFO', `engine:${engine.name}`);
+    // Two paths:
+    //   a) cfg.engineInstance — a pre-initialized engine handed over by the
+    //      UI's ⤓ Download step. Skip availability/init entirely and never
+    //      destroy it (the caller owns the cached instance and reuses it
+    //      across runs).
+    //   b) engineKey — construct fresh, availability-check, init (with the
+    //      fallback chain unless cfg.noFallback forbids it).
+    let engine = engineInstance ?? null;
+    const callerOwned = engine != null;
     const tInit0 = performance.now();
-    const sayInit = (msg) => emit('SYSTEM', 'INFO', `engine:${engine.name}`, null, { message: msg });
 
-    try {
-      if (!await engine.isAvailable()) {
-        throw new Error(`Engine "${engine.name}" is not supported in this environment (no compatible backend found).`);
-      }
-      await engine.init(sayInit, { signal });
-    } catch (err) {
-      // User aborted mid-init (Stop during a model download): re-throw so
-      // the pipeline ends immediately, with no fallback attempt.
-      if (signal && signal.aborted) throw err;
-      if (!FALLBACKS[engineKey]) {
-        throw new Error(
-          `Engine "${engine.name}" is not available in this environment. ` +
-          'For Gemini Nano: enable it via chrome://flags/#prompt-api-for-gemini-nano and chrome://components ' +
-          '(Windows/macOS Chrome). For broad compatibility, select the WebLLM or Transformers.js engine.',
-        );
-      }
-      const next = FALLBACKS[engineKey];
-      sayInit(`${engine.name} unavailable (${String(err.message || err).slice(0, 120)}) — falling back to ${next}…`);
-      emit('SYSTEM', 'INFO', `fallback:${engineKey}_to_${next}`);
-      const FallbackCtor = ENGINES[next];
-      engine = new FallbackCtor();
-      report.meta.modelFallback = engineKey;
+    if (callerOwned) {
+      report.meta.preloaded = true;
       report.meta.engine = engine.name;
-      await engine.init(sayInit, { signal });
+      emit('SYSTEM', 'INFO', `engine:${engine.name}`, null,
+        { message: 'reusing the model loaded by the ⤓ Download step — init skipped' });
+    } else {
+      const EngineCtor = ENGINES[engineKey];
+      if (!EngineCtor) throw new Error(`Unknown engine key: ${engineKey}`);
+      engine = new EngineCtor();
+
+      emit('SYSTEM', 'INFO', `engine:${engine.name}`);
+      const sayInit = (msg) => emit('SYSTEM', 'INFO', `engine:${engine.name}`, null, { message: msg });
+
+      try {
+        if (!await engine.isAvailable()) {
+          throw new Error(`Engine "${engine.name}" is not supported in this environment (no compatible backend found).`);
+        }
+        await engine.init(sayInit, { signal });
+      } catch (err) {
+        // User aborted mid-init (Stop during a model download): re-throw so
+        // the pipeline ends immediately, with no fallback attempt.
+        if (signal && signal.aborted) throw err;
+        if (noFallback || !FALLBACKS[engineKey]) {
+          throw new Error(
+            `Engine "${engine.name}" is not available in this environment. ` +
+            (engineKey === 'nano'
+              ? 'For Gemini Nano: enable it via chrome://flags/#prompt-api-for-gemini-nano and chrome://components (Windows/macOS Chrome). Otherwise select the Transformers.js engine and click ⤓ Download model.'
+              : 'Download its model with the ⤓ Download model button first, or select another engine.'),
+          );
+        }
+        const next = FALLBACKS[engineKey];
+        sayInit(`${engine.name} unavailable (${String(err.message || err).slice(0, 120)}) — falling back to ${next}…`);
+        emit('SYSTEM', 'INFO', `fallback:${engineKey}_to_${next}`);
+        const FallbackCtor = ENGINES[next];
+        engine = new FallbackCtor();
+        report.meta.modelFallback = engineKey;
+        report.meta.engine = engine.name;
+        await engine.init(sayInit, { signal });
+      }
     }
     report.meta.initMs = Math.round(performance.now() - tInit0);
     report.meta.model = engine.model || engine.device || engine.name;
@@ -486,7 +516,8 @@ export class Harness {
         }
       }
     } finally {
-      engine.destroy();
+      // Caller-owned (cached) engines are reused across runs — never destroy.
+      if (!callerOwned) engine.destroy();
     }
 
     report.meta.finishedAt = new Date().toISOString();

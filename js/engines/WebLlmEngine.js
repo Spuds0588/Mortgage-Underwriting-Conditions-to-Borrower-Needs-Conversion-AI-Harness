@@ -30,17 +30,10 @@ export class WebLlmEngine extends BaseEngine {
   #engine = null;
 
   async isAvailable() {
-    try {
-      if (!navigator.gpu) return false;
-      // Any usable adapter counts — including a SwiftShader/CPU one. The
-      // q4f16_1 quantization also works on adapters without shader-f16.
-      // requestAdapter(this) without options returns a compatible adapter
-      // strictly faster than asking for high-performance upfront.
-      const adapter = await navigator.gpu.requestAdapter({ powerPreference: 'low-power' });
-      return !!adapter;
-    } catch {
-      return false;
-    }
+    // Shared tolerant probe: any usable adapter counts, including a
+    // SwiftShader/CPU one. The q4f16_1 quantization also works on adapters
+    // without shader-f16 (q4f32_1 is selected at init in that case).
+    return BaseEngine.probeWebGPU();
   }
 
   /**

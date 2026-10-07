@@ -4,7 +4,7 @@
  * One-way flow only: app.js calls harness.process() and maps the emitted
  * event objects directly onto the DOM (no two-way data binding).
  */
-import { harness, smartChunk, DEFAULT_EXTRACT_PROMPT, DEFAULT_TRANSLATE_PROMPT, HARNESS_VERSION } from './harness.js';
+import { harness, smartChunk, DEFAULT_EXTRACT_PROMPT, DEFAULT_TRANSLATE_PROMPT, HARNESS_VERSION, ENGINES } from './harness.js';
 import { NanoEngine } from './engines/NanoEngine.js';
 import { SAMPLE_JSON, SAMPLE_EMAIL, SAMPLE_OCR } from './samples.js';
 
@@ -21,6 +21,10 @@ const els = {
   inputChunks: $('input-chunks'),
   engineSelect: $('engine-select'),
   engineHint: $('engine-hint'),
+  downloadModelBtn: $('download-model-btn'),
+  downloadStatus: $('download-status'),
+  downloadLabel: $('download-label'),
+  downloadBarFill: $('download-bar-fill'),
   runBtn: $('run-btn'),
   stopBtn: $('stop-btn'),
   clearBtn: $('clear-btn'),
@@ -53,6 +57,16 @@ let wfRows = new Map();     // id -> { row, bar, label }
 let wfMaxMs = 0;            // widest bar so far (auto-rescales)
 let resultCount = 0;
 
+/* Model downloads are decoupled from Run (v1.6): downloadable engines are
+ * initialized once via the ⤓ Download button, cached here, and reused by
+ * every subsequent Run. Run never downloads a model itself. */
+const engineCache = new Map(); // 'webllm'|'transformers' -> initialized engine
+let downloadController = null; // AbortController for the download step
+let downloadBusy = false;
+let pipelineBusy = false;
+
+const isDownloadable = (key) => key === 'webllm' || key === 'transformers';
+
 /* ── Environment Gatekeeper ─────────────────────────────────────── */
 async function checkEnvironment() {
   setEngineStatus('pending', 'Checking environment…');
@@ -65,7 +79,7 @@ async function checkEnvironment() {
   } else {
     setEngineStatus('error', 'Gemini Nano: not detected');
     els.gatekeeper.classList.remove('hidden');
-    els.engineHint.textContent = 'Nano unavailable here — pick the WebLLM or Transformers.js engine for real local inference.';
+    els.engineHint.textContent = 'Nano unavailable here — pick the Transformers.js engine and click ⤓ Download model for real local inference.';
   }
 }
 
@@ -98,17 +112,111 @@ function refreshInputMeta() {
   }, 150);
 }
 
-/* ── Engine selection ───────────────────────────────────────────── */
+/* ── Engine selection + model download gating ───────────────────────── */
 const ENGINE_HINTS = {
   nano: 'Preinstalled on supported Chrome builds — zero download, runs fully on-device.',
-  webllm: 'Downloads Qwen2.5-0.5B (WebGPU) from a public CDN on first run (~350–500 MB), then cached by your browser for instant reuse. All inference stays on-device.',
-  transformers: 'Downloads Qwen2.5-0.5B (ONNX) from a public CDN on first run (~350–500 MB), then cached by your browser. Works on Windows, macOS and Linux Chrome/Edge — with or without WebGPU.',
+  webllm: 'Needs WebGPU. Click ⤓ Download model ONCE (~480 MB, cached by your browser) — Run unlocks when the model is ready.',
+  transformers: 'Runs on ANY machine via WASM — no WebGPU needed (works on your T480). Click ⤓ Download model ONCE (~480–790 MB, cached) — Run unlocks when ready.',
 };
-function refreshEngineHint() {
-  els.engineHint.textContent = ENGINE_HINTS[els.engineSelect.value] || '';
+
+function refreshEngineUi() {
+  const key = els.engineSelect.value;
+  els.engineHint.textContent = ENGINE_HINTS[key] || '';
+
+  if (!isDownloadable(key)) {
+    els.downloadModelBtn.classList.add('hidden');
+    els.downloadStatus.classList.add('hidden');
+  } else {
+    els.downloadModelBtn.classList.remove('hidden');
+    els.downloadModelBtn.textContent = downloadBusy
+      ? '■ Cancel download'
+      : (engineCache.has(key) ? '⤓ Model ready ✓' : '⤓ Download model');
+    els.downloadModelBtn.disabled = pipelineBusy; // stays clickable as Cancel while downloading
+  }
+
+  // Run stays locked until the selected downloadable engine has its model.
+  const runLocked = pipelineBusy || downloadBusy || (isDownloadable(key) && !engineCache.has(key));
+  els.runBtn.disabled = runLocked;
+  els.runBtn.title = !runLocked || pipelineBusy ? ''
+    : `Download the ${key} model first (⤓ Download model button above)`;
 }
-els.engineSelect.addEventListener('change', refreshEngineHint);
-refreshEngineHint();
+
+els.engineSelect.addEventListener('change', refreshEngineUi);
+
+function showDownloadStatus(text, state = '') {
+  els.downloadStatus.classList.remove('hidden');
+  els.downloadLabel.textContent = text;
+  els.downloadLabel.className = `download-label${state ? ` is-${state}` : ''}`;
+  if (state === 'done') {
+    els.downloadBarFill.style.width = '100%';
+    els.downloadBarFill.className = 'download-bar-fill is-done';
+  } else if (state === 'error') {
+    els.downloadBarFill.className = 'download-bar-fill is-error';
+  } else {
+    els.downloadBarFill.className = 'download-bar-fill';
+    const pctMatch = /(\d{1,3})%/.exec(text);
+    if (pctMatch) {
+      const pct = Math.min(100, parseInt(pctMatch[1], 10));
+      els.downloadBarFill.style.width = `${Math.max(4, pct)}%`;
+    }
+  }
+}
+
+/**
+ * Download (or cancel the download of) the selected engine's model.
+ * The engine instance is kept in engineCache and handed to harness.process,
+ * so Run skips init entirely and never destroys the cached model.
+ */
+async function handleDownload() {
+  const key = els.engineSelect.value;
+  if (!isDownloadable(key)) return;
+
+  // While busy, the button acts as Cancel.
+  if (downloadBusy) {
+    downloadController?.abort();
+    showDownloadStatus(`${key}: cancelling…`);
+    return;
+  }
+
+  downloadBusy = true;
+  refreshEngineUi();
+  els.downloadBarFill.style.width = '4%';
+  els.downloadBarFill.className = 'download-bar-fill';
+  downloadController = new AbortController();
+  const t0 = performance.now();
+  let engine = null;
+
+  try {
+    // WebGPU gate for WebLLM — avoid a useless ~480 MB download on machines
+    // without any adapter (e.g. Linux Chrome on integrated graphics).
+    if (key === 'webllm') {
+      showDownloadStatus('webllm: checking for a WebGPU adapter…');
+      if (!await ENGINES.webllm.probeWebGPU()) {
+        showDownloadStatus('WebGPU is not available on this machine, so WebLLM cannot run here. Switch the engine to Transformers.js — it runs on WASM without WebGPU — and download that model instead.', 'error');
+        return;
+      }
+    }
+
+    engine = new ENGINES[key]();
+    await engine.init((msg) => showDownloadStatus(`${key}: ${msg}`), { signal: downloadController.signal });
+    engineCache.set(key, engine);
+    const secs = ((performance.now() - t0) / 1000).toFixed(1);
+    showDownloadStatus(`${key}: ✓ model ready in ${secs}s — cached by this browser, so future runs start instantly. Run is unlocked.`, 'done');
+  } catch (err) {
+    try { engine?.destroy?.(); } catch { /* noop */ }
+    if (err && err.name === 'AbortError') {
+      showDownloadStatus(`${key}: download cancelled. Partially fetched files were discarded — click Download again to restart it.`, 'error');
+    } else {
+      console.error('❌ [APP] model download failed:', err);
+      showDownloadStatus(`${key}: ✗ download failed — ${String(err.message || err)}`, 'error');
+    }
+  } finally {
+    downloadBusy = false;
+    downloadController = null;
+    refreshEngineUi();
+  }
+}
+els.downloadModelBtn.addEventListener('click', handleDownload);
 
 /* ── Advanced settings ──────────────────────────────────────────── */
 function loadAdvancedDefaults() {
@@ -131,6 +239,13 @@ async function runPipeline() {
   const text = els.inputText.value.trim();
   if (!text) { alert('Paste underwriting conditions or pick a sample first.'); els.inputText.focus(); return; }
 
+  const engineKey = els.engineSelect.value;
+  if (isDownloadable(engineKey) && !engineCache.has(engineKey)) {
+    resetOutput();
+    addSystemRow(`The ${engineKey} model is not downloaded yet — click “⤓ Download model” first. Since v1.6, Run no longer downloads models itself.`, true);
+    return;
+  }
+
   resetOutput();
   setRunning(true);
 
@@ -140,7 +255,11 @@ async function runPipeline() {
   try {
     const report = await harness.process({
       text,
-      engineKey: els.engineSelect.value,
+      engineKey,
+      // Pre-initialized engines from the ⤓ Download step: harness reuses
+      // them as-is (no init, no destroy) and never silently falls back.
+      engineInstance: engineKey === 'nano' ? null : engineCache.get(engineKey),
+      noFallback: true,
       extractPrompt: els.extractPrompt.value || DEFAULT_EXTRACT_PROMPT,
       translatePrompt: els.translatePrompt.value || DEFAULT_TRANSLATE_PROMPT,
       maxConditions: clampInt(els.maxConditions.value, 1, 20, 10),
@@ -166,9 +285,10 @@ async function runPipeline() {
 }
 
 function setRunning(running) {
-  els.runBtn.disabled = running;
+  pipelineBusy = running;
   els.runBtn.classList.toggle('hidden', running);
   els.stopBtn.classList.toggle('hidden', !running);
+  refreshEngineUi();   // single source of truth for run/download button states
 }
 
 /* ── Pipeline event → DOM mapping (the waterfall grows here) ────── */
@@ -309,7 +429,7 @@ function showSummary(meta, started) {
   const secs = ((meta.totalMs ?? wallMs) / 1000).toFixed(1);
   els.runSummary.textContent =
     `${meta.chunkCount} chunks · ${meta.promptCount} prompts · ${meta.successCount} ok · ` +
-    `${meta.errorCount} errors · ${secs}s · engine: ${meta.engine}${meta.model && meta.model !== meta.engine ? ` (${meta.model})` : ''}`;
+    `${meta.errorCount} errors · ${secs}s · engine: ${meta.engine}${meta.model && meta.model !== meta.engine ? ` (${meta.model})` : ''}${meta.preloaded ? ' · preloaded' : ''}`;
   els.runSummary.classList.remove('hidden');
   els.reportRow.classList.remove('hidden');
 }
@@ -352,5 +472,6 @@ function clampInt(value, min, max, fallback) {
 /* ── Boot ───────────────────────────────────────────────────────── */
 loadAdvancedDefaults();
 refreshInputMeta();
+refreshEngineUi();
 checkEnvironment();
 console.log('🚀 [APP] Nano Underwriting Harness ready.');

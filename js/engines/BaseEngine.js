@@ -9,6 +9,9 @@
  *   async prompt(text)           -> string   (run inference, return raw text)
  *   destroy()                    -> void     (clean up memory / close sessions)
  *
+ * Engines may also use the shared static capability probe below
+ * (BaseEngine.probeWebGPU) so WebGPU detection stays consistent.
+ *
  * Keep this file dependency-free: no imports, no DOM access.
  */
 export class BaseEngine {
@@ -56,4 +59,20 @@ export class BaseEngine {
    * @returns {void}
    */
   destroy() {}
+
+  /**
+   * Tolerant WebGPU capability probe shared by engines and UI gating.
+   * Any usable adapter counts — including software/CPU adapters — because
+   * a working (slow) adapter still beats no WebGPU at all. Never throws.
+   * @returns {Promise<boolean>}
+   */
+  static async probeWebGPU() {
+    try {
+      if (typeof navigator === 'undefined' || !navigator.gpu) return false;
+      const adapter = await navigator.gpu.requestAdapter({ powerPreference: 'low-power' });
+      return !!adapter;
+    } catch {
+      return false;
+    }
+  }
 }

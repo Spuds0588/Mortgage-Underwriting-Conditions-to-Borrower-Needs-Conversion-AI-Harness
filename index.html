@@ -43,7 +43,7 @@
         <li>Open <code>chrome://components</code> → find <strong>Optimization Guide On Device Model</strong> → click <strong>Check for update</strong> (wait for it to fully download, ~2&nbsp;GB).</li>
         <li>Relaunch Chrome and reopen this page.</li>
       </ol>
-      <p class="gatekeeper-note">For real on-device inference without Nano, pick the <strong>WebLLM</strong> or <strong>Transformers.js</strong> engine below — both run compact LLMs fully in this browser.</p>
+      <p class="gatekeeper-note">For real on-device inference without Nano, pick the <strong>Transformers.js</strong> engine below and click <strong>⤓ Download model</strong> — it runs on WASM in any modern browser, WebGPU or not.</p>
       <button id="gatekeeper-dismiss" class="btn btn-ghost btn-sm" type="button">Dismiss</button>
     </div>
   </div>
@@ -87,7 +87,14 @@
           <option value="webllm">WebLLM · Qwen2.5-0.5B (WebGPU) — local</option>
           <option value="transformers">Transformers.js · Qwen2.5-0.5B (ONNX) — local</option>
         </select>
-        <p class="hint" id="engine-hint">Nano runs fully on-device with zero downloads on supported Chrome builds; WebLLM and Transformers.js download a compact open model once (~350–500 MB) and cache it.</p>
+        <p class="hint" id="engine-hint">Nano runs fully on-device with zero downloads on supported Chrome builds; WebLLM and Transformers.js download a compact open model once via the ⤓ button below and cache it.</p>
+        <div id="download-row" class="download-row">
+          <button id="download-model-btn" class="btn btn-secondary" type="button">⤓ Download model</button>
+          <div id="download-status" class="download-status hidden">
+            <div class="download-bar-track"><div id="download-bar-fill" class="download-bar-fill"></div></div>
+            <div id="download-label" class="download-label"></div>
+          </div>
+        </div>
       </div>
 
       <div class="panel-block">

@@ -199,6 +199,33 @@ select:focus, textarea:focus, input:focus { outline: 2px solid var(--accent); ou
 
 .btn-row { display: flex; gap: 10px; flex-wrap: wrap; }
 
+/* ── Model download (decoupled from Run) ───────────────────────── */
+.download-row { margin-top: 12px; display: flex; flex-direction: column; gap: 8px; }
+.download-status { display: flex; flex-direction: column; gap: 5px; }
+.download-bar-track {
+  height: 8px;
+  border-radius: 5px;
+  background: var(--bg-inset);
+  border: 1px solid var(--border);
+  overflow: hidden;
+}
+.download-bar-fill {
+  height: 100%;
+  width: 0%;
+  background: var(--accent);
+  transition: width 0.3s ease;
+}
+.download-bar-fill.is-error { background: var(--error); }
+.download-bar-fill.is-done  { background: var(--success); }
+.download-label {
+  font-family: var(--font-mono);
+  font-size: 0.78rem;
+  color: var(--text-dim);
+  word-break: break-word;
+}
+.download-label.is-error { color: var(--error); }
+.download-label.is-done  { color: var(--success); }
+
 /* ── Advanced settings ─────────────────────────────────────────── */
 #advanced-settings summary {
   cursor: pointer;
