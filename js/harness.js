@@ -18,7 +18,7 @@ import { TransformersEngine } from './engines/TransformersEngine.js';
 /* ── Build identity ─────────────────────────────────────────────── */
 
 /** Bumped with each behavior change so downloaded reports self-identify. */
-export const HARNESS_VERSION = '1.7.0';
+export const HARNESS_VERSION = '1.8.0';
 
 /* ── Default, user-tunable prompts (Advanced Settings) ──────────── */
 
@@ -39,25 +39,20 @@ export const DEFAULT_EXTRACT_PROMPT = [
   '>>>',
 ].join('\n');
 
+/**
+ * Default Stage-2 rewrite instructions. Kept deliberately SHORT: every
+ * prompt token is paid for in CPU prefill on every condition (measured
+ * ~28s of pure prefill on a T480 before the first token even lands). The
+ * detailed mortgage glossary moved to expandAcronyms(), which rewrites
+ * known jargon deterministically before the model ever sees it — that
+ * both shrinks the prompt and stopped the model from pasting unrelated
+ * glossary entries into translations (observed failure on Qwen2.5-0.5B).
+ */
 export const DEFAULT_TRANSLATE_PROMPT = [
   'Rewrite the mortgage underwriting condition below as ONE short, warm, plain-English sentence addressed directly to the borrower ("you").',
   'State the ACTION or DOCUMENT the borrower must provide — never merely describe the situation.',
-  'Keep numbers, dates and dollar amounts exactly as given, and keep their role: a "90-day effective" period runs 90 days FORWARD from the event in the condition (an appraisal effective 90 days is valid until 90 days after its order — never "delivered 90 days ago"). Never invent requirements, documents or amounts not present in the condition or context.',
-  'Expand jargon and acronyms using this glossary (expand ONLY acronyms the condition actually contains — never import other glossary items):',
-  '- VOE = Verification of Employment (proof of employment or income, NOT equity, NOT valuation).',
-  '- PMI = Private Mortgage Insurance (NOT payment indemnity; PML or P8I are garbled forms of PMI).',
-  '- YTD = year-to-date (income so far this year).',
-  '- Gift letter = signed letter stating a down-payment gift does not need to be repaid.',
-  '- Seasoned trail = bank statement proof that gift funds were on deposit for the stated number of days.',
-  '- Rent schedule = document listing expected rental income from the property.',
-  '- Escrow analysis = recalculation of the monthly tax and insurance escrow payment.',
-  'Use the CONTEXT below to resolve what the condition refers to; rely on it whenever the condition alone is ambiguous.',
+  'Keep all numbers, dates, dollar amounts and names exactly as given, in their original role. Never invent requirements, documents or amounts not present in the condition.',
   'Answer with only that single sentence — no markdown, no quotes, no commentary.',
-  '',
-  'CONTEXT:',
-  '<<<',
-  '{{CONTEXT}}',
-  '>>>',
   '',
   'CONDITION:',
   '<<<',
@@ -93,9 +88,10 @@ const TRANSLATE_MAX_TOKENS = 120;
  * without streaming support simply never invoke it.
  * @param {(phase: string, status: string, id: string, ms: number|null, data: object|null) => void} emit
  */
-function makeTokenHeartbeat(emit, phase, id, t0) {
+function makeTokenHeartbeat(emit, phase, id, t0, store = null) {
   let lastEmitted = 0;
   return (tokens) => {
+    if (store) store.set(id, tokens);
     if (tokens - lastEmitted >= 8) {
       lastEmitted = tokens;
       emit(phase, 'INFO', id, Math.round(performance.now() - t0), { tokens });
@@ -285,6 +281,39 @@ export function filterVagueFragments(list) {
  * selectable (lightweight check), init falls back to the next engine that
  * CAN download-and-run anywhere — never to one with equal requirements.
  */
+/* ── Deterministic acronym expansion ───────────────────────────── */
+
+/**
+ * Mortgage jargon the 0.5B models reliably mangle or hallucinate around.
+ * Rewritten in plain English BEFORE translation: deterministic (no model
+ * tokens spent), shrinks the prompt, and removes the glossary-following
+ * burden that caused wrong-term hallucinations on Qwen2.5-0.5B.
+ * Longest phrases first so multi-word matches win.
+ * @type {[RegExp, string][]}
+ */
+const ACRONYM_EXPANSIONS = [
+  [/\bseasoned?\s+trail\b/gi, 'bank statements proving the funds sat in the account for the stated number of days'],
+  [/\bescrow analysis\b/gi, 'recalculated monthly tax and insurance escrow payment (escrow analysis)'],
+  [/\brent schedule\b/gi, 'document listing expected rental income (rent schedule)'],
+  [/\bgift letter\b/gi, 'signed letter stating the down-payment gift does not need to be repaid (gift letter)'],
+  [/\bVOE\b/g, 'proof of employment (VOE)'],
+  [/\bYTD\b/g, 'year-to-date (YTD)'],
+  [/\bPMI\b/g, 'private mortgage insurance (PMI)'],
+  [/\bP[18][FI]\b/g, 'private mortgage insurance (PMI)'],
+  [/\bPML\b/g, 'private mortgage insurance (PMI)'],
+];
+
+/**
+ * Expand known mortgage acronyms/garble in a condition string.
+ * @param {string} text
+ * @returns {string}
+ */
+export function expandAcronyms(text) {
+  let out = String(text ?? '');
+  for (const [re, replacement] of ACRONYM_EXPANSIONS) out = out.replace(re, replacement);
+  return out;
+}
+
 const FALLBACKS = {
   nano: 'webllm',      // Next try: WebGPU backend.
   webllm: 'transformers', // Has a WASM backend that runs everywhere.
@@ -444,6 +473,8 @@ export class Harness {
     report.meta.model = engine.model || engine.device || engine.name;
 
     const guardAbort = () => { if (signal && signal.aborted) throw new DOMException('Aborted', 'AbortError'); };
+    const tokenCounts = new Map(); // item id -> tokens generated (via onToken heartbeats)
+    const lastTokenCount = (id) => tokenCounts.get(id) ?? 0;
 
     try {
       // ── Stage 1: sequential extraction over chunks (skipped for JSON routing) ──
@@ -458,7 +489,7 @@ export class Harness {
           const raw = await engine.prompt(prompt, {
             signal,
             temperature: 0.1,
-            onToken: makeTokenHeartbeat(emit, 'EXTRACT', chunk.id, t0),
+            onToken: makeTokenHeartbeat(emit, 'EXTRACT', chunk.id, t0, tokenCounts),
           });
           const ms = Math.round(performance.now() - t0);
           report.meta.promptCount += 1;
@@ -471,7 +502,7 @@ export class Harness {
             const raw2 = await engine.prompt(prompt, {
               signal,
               temperature: 0.1,
-              onToken: makeTokenHeartbeat(emit, 'EXTRACT', chunk.id, t1),
+              onToken: makeTokenHeartbeat(emit, 'EXTRACT', chunk.id, t1, tokenCounts),
             });
             report.meta.promptCount += 1;
             found = parseConditionsJson(raw2).slice(0, maxConditions);
@@ -512,14 +543,12 @@ export class Harness {
       for (const cond of conditions) {        // SEQUENTIAL: never Promise.all
         guardAbort();
         emit('TRANSLATE', 'START', cond.id, null, { preview: cond.condition.slice(0, 80) });
-        // Thread the source chunk through so the translator can resolve
-        // pronouns and shorthand against the original wording.
-        const srcChunk = cond.chunkId ? chunks.find((c) => c.id === cond.chunkId) : null;
-        // Cap context so the translation prompt stays small enough for
-        // on-device models to attend to the CONDITION itself.
-        const ctx = srcChunk ? srcChunk.text.slice(0, 700) : '(no extra context — rewrite only what the condition itself says)';
+        // Deterministic acronym expansion before the model sees the text:
+        // cheaper than prompt tokens and immune to 0.5B glossary
+        // hallucinations (observed: unrelated terms pasted into needs).
+        cond.condition = expandAcronyms(cond.condition);
         const prompt = translatePrompt
-          .replaceAll('{{CONTEXT}}', ctx)
+          .replaceAll('{{CONTEXT}}', '')
           .replaceAll('{{CONDITION}}', cond.condition);
         const t0 = performance.now();
         try {
@@ -531,19 +560,23 @@ export class Harness {
             signal,
             temperature: 0,
             maxTokens: TRANSLATE_MAX_TOKENS,
-            onToken: makeTokenHeartbeat(emit, 'TRANSLATE', cond.id, t0),
+            onToken: makeTokenHeartbeat(emit, 'TRANSLATE', cond.id, t0, tokenCounts),
           });
           const ms = Math.round(performance.now() - t0);
           report.meta.promptCount += 1;
           report.meta.successCount += 1;
+          const need = String(raw).trim().replace(/^["“]|["”]$/g, '');
+          const tok = lastTokenCount(cond.id);
           report.items.push({
             id: cond.id,
             chunkId: cond.chunkId,
             condition: cond.condition,
-            need: String(raw).trim().replace(/^["“]|["”]$/g, ''),
+            need,
             translateMs: ms,
+            tokens: tok,
+            tokPerSec: tok ? +(tok / (ms / 1000)).toFixed(2) : null,
           });
-          emit('TRANSLATE', 'SUCCESS', cond.id, ms, { need: report.items[report.items.length - 1].need });
+          emit('TRANSLATE', 'SUCCESS', cond.id, ms, { need, tokens: tok });
         } catch (err) {
           if (err && err.name === 'AbortError') throw err;
           const ms = Math.round(performance.now() - t0);

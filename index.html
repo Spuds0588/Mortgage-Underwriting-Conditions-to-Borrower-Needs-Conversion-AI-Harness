@@ -149,6 +149,13 @@
     </p>
   </footer>
 
+  <!-- COI shim: registers a service worker that adds COOP/COEP response
+       headers client-side, making the page crossOriginIsolated so ONNX
+       Runtime can use its multi-threaded WASM kernel (SharedArrayBuffer).
+       On the first load it registers + reloads once; afterwards it's a
+       pass-through. Without it, GitHub Pages cannot send these headers and
+       the transformers engine stays pinned to 1 CPU thread. -->
+  <script src="coi-serviceworker.js"></script>
   <script type="module" src="js/app.js"></script>
 </body>
 </html>

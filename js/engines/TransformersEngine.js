@@ -84,9 +84,9 @@ export class TransformersEngine extends BaseEngine {
     // the page really is cross-origin isolated.
     const isolated = typeof self !== 'undefined' && self.crossOriginIsolated === true;
     try {
-      env.backends.onnx.wasm.numThreads = isolated ? Math.min(4, navigator.hardwareConcurrency || 1) : 1;
+      env.backends.onnx.wasm.numThreads = isolated ? Math.min(8, navigator.hardwareConcurrency || 1) : 1;
     } catch { /* env shape changed in a future lib version — defaults apply */ }
-    say(`ONNX Runtime WASM: numThreads=${isolated ? 'auto (page isolated)' : '1'} — page is ${isolated ? '' : 'NOT '}crossOriginIsolated.`);
+    say(`ONNX Runtime WASM: numThreads=${isolated ? 'auto (page isolated)' : '1'}${isolated ? '' : ' (single-threaded)'} — page is ${isolated ? '' : 'NOT '}crossOriginIsolated${isolated ? ' — multi-threaded WASM enabled' : ' — load via the COOP/COEP service worker for a big speedup'}.`);
 
     // Progress ticks fire for every parallel file. A per-file
     // "announce on change" rule floods the log when tokenizer + model
@@ -126,9 +126,11 @@ export class TransformersEngine extends BaseEngine {
     } else {
       say('No WebGPU adapter — going straight to WASM (CPU inference, works everywhere).');
     }
-    // WASM: q4 (MatMulNBits) is smallest-per-quality; q8 (model_quantized)
-    // is the most battle-tested CPU quantization — try both before giving up.
-    plans.push({ device: 'wasm', dtypes: ['q4', 'q8'] });
+    // WASM: q8 (model_quantized) is the fastest, most battle-tested CPU
+    // quantization on ONNX Runtime Web — measured faster than q4 on wasm
+    // despite the larger download — and higher quality. q4 (MatMulNBits)
+    // is the fallback. Try both before giving up.
+    plans.push({ device: 'wasm', dtypes: ['q8', 'q4'] });
 
     /** @type {string[]} Real per-attempt failure reasons, surfaced on total failure. */
     const attempts = [];
