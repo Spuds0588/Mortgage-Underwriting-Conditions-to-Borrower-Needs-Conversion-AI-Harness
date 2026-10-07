@@ -18,7 +18,7 @@ import { TransformersEngine } from './engines/TransformersEngine.js';
 /* ── Build identity ─────────────────────────────────────────────── */
 
 /** Bumped with each behavior change so downloaded reports self-identify. */
-export const HARNESS_VERSION = '1.8.0';
+export const HARNESS_VERSION = '1.8.1';
 
 /* ── Default, user-tunable prompts (Advanced Settings) ──────────── */
 
@@ -40,17 +40,19 @@ export const DEFAULT_EXTRACT_PROMPT = [
 ].join('\n');
 
 /**
- * Default Stage-2 rewrite instructions. Kept deliberately SHORT: every
- * prompt token is paid for in CPU prefill on every condition (measured
- * ~28s of pure prefill on a T480 before the first token even lands). The
- * detailed mortgage glossary moved to expandAcronyms(), which rewrites
- * known jargon deterministically before the model ever sees it — that
- * both shrinks the prompt and stopped the model from pasting unrelated
- * glossary entries into translations (observed failure on Qwen2.5-0.5B).
+ * Default Stage-2 rewrite instructions. Kept deliberately SHORT (every
+ * prompt token is paid in CPU prefill on every condition) with ONE
+ * worked example: 0.5B models follow an example far more reliably than
+ * a rule list, and the example implicitly teaches jargon expansion.
+ * The mortgage glossary lives in expandAcronyms(), which rewrites known
+ * jargon deterministically before the model ever sees it.
  */
 export const DEFAULT_TRANSLATE_PROMPT = [
   'Rewrite the mortgage underwriting condition below as ONE short, warm, plain-English sentence addressed directly to the borrower ("you").',
-  'State the ACTION or DOCUMENT the borrower must provide — never merely describe the situation.',
+  'State the ACTION or DOCUMENT the borrower must provide — never merely describe the situation. Never answer with a list or an essay.',
+  'Example:',
+  'Condition: "Provide updated paystubs and a VOE dated within 30 days of the note date."',
+  'Good answer: "Could you send us your most recent paystub and a proof of employment dated within the last 30 days?"',
   'Keep all numbers, dates, dollar amounts and names exactly as given, in their original role. Never invent requirements, documents or amounts not present in the condition.',
   'Answer with only that single sentence — no markdown, no quotes, no commentary.',
   '',
@@ -75,11 +77,13 @@ export const ENGINES = {
 
 /**
  * Max tokens for one Stage-2 translation: a single sentence. A tight cap
- * keeps CPU engines (0.5B on single-threaded WASM ≈ 1–5 tok/s on older
- * hardware) from sitting for minutes per condition, and greedy decoding
- * reaches EOS sooner while keeping output deterministic.
+ * keeps CPU engines (0.5B on WASM ≈ 1–2 tok/s on older hardware) from
+ * rambling for minutes per condition when the model misses EOS — one
+ * good need is ~20–35 tokens, so 72 leaves headroom without allowing
+ * essay mode (observed on T480 Run 14: 2/6 conditions burned a 120 cap
+ * on generic boilerplate).
  */
-const TRANSLATE_MAX_TOKENS = 120;
+const TRANSLATE_MAX_TOKENS = 72;
 
 /**
  * Build an onToken callback that surfaces generation progress as INFO
@@ -295,7 +299,7 @@ const ACRONYM_EXPANSIONS = [
   [/\bseasoned?\s+trail\b/gi, 'bank statements proving the funds sat in the account for the stated number of days'],
   [/\bescrow analysis\b/gi, 'recalculated monthly tax and insurance escrow payment (escrow analysis)'],
   [/\brent schedule\b/gi, 'document listing expected rental income (rent schedule)'],
-  [/\bgift letter\b/gi, 'signed letter stating the down-payment gift does not need to be repaid (gift letter)'],
+  [/\bgift letter\b/gi, 'letter stating the down-payment gift does not need to be repaid (gift letter)'],
   [/\bVOE\b/g, 'proof of employment (VOE)'],
   [/\bYTD\b/g, 'year-to-date (YTD)'],
   [/\bPMI\b/g, 'private mortgage insurance (PMI)'],
@@ -552,13 +556,15 @@ export class Harness {
           .replaceAll('{{CONDITION}}', cond.condition);
         const t0 = performance.now();
         try {
-          // Greedy + tight token cap + per-token heartbeat: a translation
-          // is ONE sentence, so a CPU engine should finish in well under a
-          // minute instead of minutes of silent generation (v1.7 fix for
-          // the "appears to hang" reports).
+          // Light sampling (0.3), tight cap, per-token heartbeat. T480
+          // evidence: v1.7.0 sampled at 0.3 → 6/6 sentence-shaped needs;
+          // v1.8.0 pure greedy → 2/6 collapsed into generic essays that
+          // burned the full token cap and a 3rd answered as a list. Small
+          // models need a little noise to stay on-format; output varies
+          // slightly run to run.
           const raw = await engine.prompt(prompt, {
             signal,
-            temperature: 0,
+            temperature: 0.3,
             maxTokens: TRANSLATE_MAX_TOKENS,
             onToken: makeTokenHeartbeat(emit, 'TRANSLATE', cond.id, t0, tokenCounts),
           });

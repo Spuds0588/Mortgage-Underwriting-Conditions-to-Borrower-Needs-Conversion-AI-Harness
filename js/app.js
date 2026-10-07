@@ -117,7 +117,7 @@ function refreshInputMeta() {
 const ENGINE_HINTS = {
   nano: 'Preinstalled on supported Chrome builds — zero download, runs fully on-device.',
   webllm: 'Needs WebGPU. Click ⤓ Download model ONCE (~480 MB, cached by your browser) — Run unlocks when the model is ready.',
-  transformers: 'Runs on ANY machine via WASM — no WebGPU needed. First click enables multi-core WASM (the page reloads once or twice — normal), then ⤓ Download model (~512 MB, cached). CPU generation is slow single-threaded (~2–6 min per condition on a T480); with multi-core enabled expect several times faster. The waterfall shows a live token counter either way.',
+  transformers: 'Runs on ANY machine via WASM — no WebGPU needed. First click enables multi-core WASM (the page reloads once or twice — normal), then ⤓ Download model (~512 MB, cached). Measured on a T480 (i5-8250U): ~0.4 tok/s single-threaded → ~1–2 tok/s multi-core (~2× faster overall, CPU maxed). Waterfall shows a live token counter either way.',
 };
 
 function refreshEngineUi() {
