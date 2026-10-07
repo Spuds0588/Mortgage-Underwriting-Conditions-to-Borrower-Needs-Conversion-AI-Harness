@@ -53,8 +53,9 @@ if (footerP) {
 
 /* ── State ──────────────────────────────────────────────────────── */
 let controller = null;      // AbortController for the running pipeline
-let wfRows = new Map();     // id -> { row, bar, label }
+let wfRows = new Map();     // id -> { row, bar, label, startTs, tok, done }
 let wfMaxMs = 0;            // widest bar so far (auto-rescales)
+let wfTicker = null;        // liveness ticker for in-flight waterfall rows
 let resultCount = 0;
 
 /* Model downloads are decoupled from Run (v1.6): downloadable engines are
@@ -116,7 +117,7 @@ function refreshInputMeta() {
 const ENGINE_HINTS = {
   nano: 'Preinstalled on supported Chrome builds — zero download, runs fully on-device.',
   webllm: 'Needs WebGPU. Click ⤓ Download model ONCE (~480 MB, cached by your browser) — Run unlocks when the model is ready.',
-  transformers: 'Runs on ANY machine via WASM — no WebGPU needed (works on your T480). Click ⤓ Download model ONCE (~480–790 MB, cached) — Run unlocks when ready.',
+  transformers: 'Runs on ANY machine via WASM — no WebGPU needed (works on your T480). Click ⤓ Download model ONCE (~480–790 MB, cached) — Run unlocks when ready. CPU generation is slow (~1–2 min per condition on a T480): the waterfall shows a live token counter so you can watch it work.',
 };
 
 function refreshEngineUi() {
@@ -286,6 +287,7 @@ async function runPipeline() {
 
 function setRunning(running) {
   pipelineBusy = running;
+  if (!running) stopTicker();
   els.runBtn.classList.toggle('hidden', running);
   els.stopBtn.classList.toggle('hidden', !running);
   refreshEngineUi();   // single source of truth for run/download button states
@@ -311,6 +313,11 @@ function onPipelineEvent(evt) {
     }
   } else if (status === 'ERROR') {
     failWaterfallRow(id, ms);
+  } else if (status === 'INFO') {
+    // Streaming engines report generation progress as throttled INFO events
+    // (data.tokens) — feed the live counter on the active waterfall row.
+    const entry = wfRows.get(id);
+    if (entry && data && Number.isFinite(data.tokens)) entry.tok = data.tokens;
   }
 }
 
@@ -340,7 +347,7 @@ function addWaterfallRow(phase, id) {
   track.className = 'wf-track';
 
   const bar = document.createElement('div');
-  bar.className = `wf-bar phase-${phase}`;
+  bar.className = `wf-bar phase-${phase} is-active`;
   bar.style.width = '4%';
   bar.textContent = '…';
 
@@ -349,12 +356,36 @@ function addWaterfallRow(phase, id) {
   row.appendChild(track);
   els.waterfall.appendChild(row);
 
-  wfRows.set(id, { row, bar, label });
+  wfRows.set(id, { row, bar, label, startTs: performance.now(), tok: 0, done: false });
+  startTicker();
+}
+
+/* Live liveness for in-flight rows: elapsed seconds plus the streamed
+ * token count (tokens arrive via INFO events from streaming engines).
+ * Without this, a slow CPU engine looks like a dead pipeline. */
+function startTicker() {
+  if (wfTicker) return;
+  wfTicker = setInterval(() => {
+    const now = performance.now();
+    for (const entry of wfRows.values()) {
+      if (entry.done) continue;
+      const secs = Math.floor((now - entry.startTs) / 1000);
+      entry.bar.textContent = entry.tok > 0
+        ? `${entry.tok} tok · ${secs}s`
+        : `generating… ${secs}s`;
+    }
+  }, 500);
+}
+
+function stopTicker() {
+  if (wfTicker) { clearInterval(wfTicker); wfTicker = null; }
 }
 
 function finishWaterfallRow(id, ms, suffix) {
   const entry = wfRows.get(id);
   if (!entry) return;
+  entry.done = true;
+  entry.bar.classList.remove('is-active');
   const safeMs = Number.isFinite(ms) ? ms : 0;
   wfMaxMs = Math.max(wfMaxMs, safeMs);
   entry.bar.textContent = `${safeMs}ms ${suffix}`.trim();
@@ -373,6 +404,8 @@ function parseMsFromBar(text) {
 function failWaterfallRow(id, ms) {
   const entry = wfRows.get(id);
   if (!entry) return;
+  entry.done = true;
+  entry.bar.classList.remove('is-active');
   entry.bar.classList.add('is-error');
   entry.bar.textContent = `${Number(ms) || 0}ms error`;
 }
@@ -450,6 +483,7 @@ els.downloadReportBtn.addEventListener('click', () => {
 
 /* ── Reset ──────────────────────────────────────────────────────── */
 function resetOutput() {
+  stopTicker();
   wfRows.clear();
   wfMaxMs = 0;
   resultCount = 0;

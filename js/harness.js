@@ -18,7 +18,7 @@ import { TransformersEngine } from './engines/TransformersEngine.js';
 /* ── Build identity ─────────────────────────────────────────────── */
 
 /** Bumped with each behavior change so downloaded reports self-identify. */
-export const HARNESS_VERSION = '1.6.0';
+export const HARNESS_VERSION = '1.7.0';
 
 /* ── Default, user-tunable prompts (Advanced Settings) ──────────── */
 
@@ -77,6 +77,31 @@ export const ENGINES = {
 };
 
 /* ── Small utilities ────────────────────────────────────────────── */
+
+/**
+ * Max tokens for one Stage-2 translation: a single sentence. A tight cap
+ * keeps CPU engines (0.5B on single-threaded WASM ≈ 1–5 tok/s on older
+ * hardware) from sitting for minutes per condition, and greedy decoding
+ * reaches EOS sooner while keeping output deterministic.
+ */
+const TRANSLATE_MAX_TOKENS = 120;
+
+/**
+ * Build an onToken callback that surfaces generation progress as INFO
+ * events (throttled) so the UI can show a live token counter while a slow
+ * CPU engine generates. Streaming engines call it per token; engines
+ * without streaming support simply never invoke it.
+ * @param {(phase: string, status: string, id: string, ms: number|null, data: object|null) => void} emit
+ */
+function makeTokenHeartbeat(emit, phase, id, t0) {
+  let lastEmitted = 0;
+  return (tokens) => {
+    if (tokens - lastEmitted >= 8) {
+      lastEmitted = tokens;
+      emit(phase, 'INFO', id, Math.round(performance.now() - t0), { tokens });
+    }
+  };
+}
 
 function splitSentences(text) {
   return String(text)
@@ -311,7 +336,8 @@ export class Harness {
       // errors) in the console too — bare event ids made engine-init
       // progress look like an unexplained flood.
       const detail = data && data.message != null ? ` — ${data.message}`
-        : data && data.error != null ? ` — ${data.error}` : '';
+        : data && data.error != null ? ` — ${data.error}`
+        : data && data.tokens != null ? ` — ${data.tokens} tokens` : '';
       console.log(`${icon} [${phase}/${status}] ${id}${ms != null ? ` (${ms}ms)` : ''}${detail}`);
       return evt;
     };
@@ -429,7 +455,11 @@ export class Harness {
           .replaceAll('{{CHUNK}}', chunk.text);
         const t0 = performance.now();
         try {
-          const raw = await engine.prompt(prompt, { signal, temperature: 0.1 });
+          const raw = await engine.prompt(prompt, {
+            signal,
+            temperature: 0.1,
+            onToken: makeTokenHeartbeat(emit, 'EXTRACT', chunk.id, t0),
+          });
           const ms = Math.round(performance.now() - t0);
           report.meta.promptCount += 1;
           let found = parseConditionsJson(raw).slice(0, maxConditions);
@@ -438,7 +468,11 @@ export class Harness {
           if (!found.length && chunk.text.length > 120 && !report.meta.errors.some((e) => e.id === chunk.id)) {
             emit('EXTRACT', 'INFO', chunk.id, ms, { retry: 'empty result — retrying once' });
             const t1 = performance.now();
-            const raw2 = await engine.prompt(prompt, { signal, temperature: 0.1 });
+            const raw2 = await engine.prompt(prompt, {
+              signal,
+              temperature: 0.1,
+              onToken: makeTokenHeartbeat(emit, 'EXTRACT', chunk.id, t1),
+            });
             report.meta.promptCount += 1;
             found = parseConditionsJson(raw2).slice(0, maxConditions);
             report.chunks.find((c) => c.id === chunk.id).retry = true;
@@ -489,7 +523,16 @@ export class Harness {
           .replaceAll('{{CONDITION}}', cond.condition);
         const t0 = performance.now();
         try {
-          const raw = await engine.prompt(prompt, { signal });
+          // Greedy + tight token cap + per-token heartbeat: a translation
+          // is ONE sentence, so a CPU engine should finish in well under a
+          // minute instead of minutes of silent generation (v1.7 fix for
+          // the "appears to hang" reports).
+          const raw = await engine.prompt(prompt, {
+            signal,
+            temperature: 0,
+            maxTokens: TRANSLATE_MAX_TOKENS,
+            onToken: makeTokenHeartbeat(emit, 'TRANSLATE', cond.id, t0),
+          });
           const ms = Math.round(performance.now() - t0);
           report.meta.promptCount += 1;
           report.meta.successCount += 1;

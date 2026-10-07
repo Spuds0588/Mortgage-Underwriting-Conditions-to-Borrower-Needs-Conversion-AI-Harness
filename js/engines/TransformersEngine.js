@@ -52,6 +52,9 @@ export class TransformersEngine extends BaseEngine {
   /** @type {object|null} Text-generation pipeline. */
   #pipe = null;
 
+  /** @type {object|null} The transformers.js module (for TextStreamer + stopping criteria). */
+  #mod = null;
+
   async isAvailable() {
     // WASM fallback means this engine can run anywhere; WebGPU is a bonus.
     return true;
@@ -70,7 +73,8 @@ export class TransformersEngine extends BaseEngine {
     };
 
     say('Loading Transformers.js runtime from CDN…');
-    const { pipeline, env } = await import(TRANSFORMERS_CDN);
+    this.#mod = await import(TRANSFORMERS_CDN);
+    const { pipeline, env } = this.#mod;
     env.allowLocalModels = false;
 
     // GitHub Pages (and most static hosts) send no COOP/COEP headers, so
@@ -81,9 +85,8 @@ export class TransformersEngine extends BaseEngine {
     const isolated = typeof self !== 'undefined' && self.crossOriginIsolated === true;
     try {
       env.backends.onnx.wasm.numThreads = isolated ? Math.min(4, navigator.hardwareConcurrency || 1) : 1;
-      env.backends.onnx.wasm.proxy = false;
     } catch { /* env shape changed in a future lib version — defaults apply */ }
-    say(`ONNX Runtime WASM: numThreads=${isolated ? 'auto (page isolated)' : '1'}, proxy=off — page is ${isolated ? '' : 'NOT '}crossOriginIsolated.`);
+    say(`ONNX Runtime WASM: numThreads=${isolated ? 'auto (page isolated)' : '1'} — page is ${isolated ? '' : 'NOT '}crossOriginIsolated.`);
 
     // Progress ticks fire for every parallel file. A per-file
     // "announce on change" rule floods the log when tokenizer + model
@@ -134,6 +137,11 @@ export class TransformersEngine extends BaseEngine {
         if (opts.signal && opts.signal.aborted) throw new DOMException('Aborted', 'AbortError');
         const size = DTYPE_SIZE_MB[dtype] ? ` (~${DTYPE_SIZE_MB[dtype]} MB first load)` : '';
         say(`Trying ${plan.device}/${dtype}${size}…`);
+        // WASM sessions run inside a dedicated ORT worker (proxy) so each
+        // forward pass never blocks the page's main thread. With
+        // numThreads=1 the proxy worker needs no SharedArrayBuffer, so it
+        // works without cross-origin isolation (canary-verified).
+        try { env.backends.onnx.wasm.proxy = plan.device === 'wasm'; } catch { /* noop */ }
         try {
           this.#pipe = await raceAbort(
             pipeline('text-generation', MODEL_ID, {
@@ -165,22 +173,68 @@ export class TransformersEngine extends BaseEngine {
   /**
    * Run one chat completion.
    * @param {string} text
-   * @param {{signal?: AbortSignal, maxTokens?: number, temperature?: number}} [opts]
+   * @param {{signal?: AbortSignal, maxTokens?: number, temperature?: number,
+   *          onToken?: (count: number) => void}} [opts]
    * @returns {Promise<string>}
    */
   async prompt(text, opts = {}) {
     if (!this.#pipe) throw new Error('TransformersEngine: prompt() called before init().');
     if (opts.signal && opts.signal.aborted) throw new DOMException('Aborted', 'AbortError');
 
+    const signal = opts.signal ?? null;
+    const onToken = typeof opts.onToken === 'function' ? opts.onToken : null;
+
     const messages = [
       { role: 'system', content: SYSTEM_MESSAGE },
       { role: 'user', content: text },
     ];
-    const out = await this.#pipe(messages, {
-      max_new_tokens: opts.maxTokens ?? 400,
-      do_sample: (opts.temperature ?? 0.3) > 0,
-      temperature: opts.temperature ?? 0.3,
-    });
+
+    // temperature <= 0 means greedy: the key must stay absent (the warper
+    // throws on temperature <= 0 and is only built when do_sample is true).
+    const temperature = opts.temperature ?? 0.3;
+    const genOpts = { max_new_tokens: opts.maxTokens ?? 400 };
+    if (temperature > 0) {
+      genOpts.do_sample = true;
+      genOpts.temperature = temperature;
+    } else {
+      genOpts.do_sample = false;
+    }
+
+    // Liveness + mid-flight cancellation: a 0.5B model on single-threaded
+    // WASM generates only a few tokens per second on an older laptop, so
+    // without a streamer the pipeline looks frozen for minutes and Stop
+    // cannot cancel anything once generation has started. token_callback_
+    // function fires once per generated token (skip_prompt keeps the
+    // prefill silent); an InterruptableStoppingCriteria winds the loop
+    // down gracefully when the caller's signal aborts. Semantics verified
+    // against the transformers.js 3.7.5 source: a custom stopping_criteria
+    // EXTENDS the default EOS/MaxLength criteria, so normal early-stopping
+    // still works.
+    if (onToken || signal) {
+      const { TextStreamer, InterruptableStoppingCriteria } = this.#mod;
+      const stopCriteria = InterruptableStoppingCriteria ? new InterruptableStoppingCriteria() : null;
+      if (stopCriteria) genOpts.stopping_criteria = stopCriteria;
+      let tokenCount = 0;
+      genOpts.streamer = new TextStreamer(this.#pipe.tokenizer, {
+        skip_prompt: true,
+        callback_function: () => {}, // TextStreamer defaults this to console.log — silence it
+        token_callback_function: (tokens) => {
+          tokenCount += Array.isArray(tokens) ? tokens.length : 1;
+          if (onToken) onToken(tokenCount);
+          if (signal && signal.aborted) {
+            if (stopCriteria) stopCriteria.interrupt();
+            else throw new DOMException('Aborted', 'AbortError'); // lib changed — hard abort
+          }
+        },
+      });
+    }
+
+    // raceAbort rejects the outer await the moment Stop fires (the pipeline
+    // ends immediately) while the orphaned generate() winds down at its
+    // next token callback via the stopping criteria — the session stays
+    // healthy for the next run.
+    const out = await raceAbort(this.#pipe(messages, genOpts), signal);
+    if (signal && signal.aborted) throw new DOMException('Aborted', 'AbortError');
     const turns = out?.[0]?.generated_text;
     if (Array.isArray(turns)) return turns.at(-1)?.content ?? '';
     return String(turns ?? '');
