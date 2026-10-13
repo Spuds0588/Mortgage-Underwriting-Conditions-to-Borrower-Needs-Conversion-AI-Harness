@@ -1,0 +1,75 @@
+name: Deploy site to GitHub Pages
+
+# Actions-based deployment, replacing the legacy "Deploy from a branch" build.
+#
+# Why this exists: the legacy branch build for this repo began serving GitHub's
+# "Site not found" page for every path, while reporting success everywhere else.
+# Its uploaded artifact for commit 95baa56 was downloaded and verified complete
+# (index.html, css/, js/, js/vendor/needle/needle.wasm — all present, no
+# symlinks, no traversal), Pages reported status "built" with no build error,
+# and the deployment API reported success. Re-asserting the source, requesting
+# fresh builds, and deleting/recreating the Pages site all failed to restore
+# service, while every other Pages site on this account kept serving.
+#
+# Four sibling repos publish successfully through actions/deploy-pages, so the
+# site moves onto that path. The app itself is unchanged.
+#
+# The site is zero-build: the tracked files ARE the site.
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+# One Pages deployment at a time; a newer push supersedes an in-flight one.
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+jobs:
+  deploy:
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Pages
+        uses: actions/configure-pages@v5
+
+      # Publish the repo root. A fresh checkout already excludes the gitignored
+      # dev-only paths (node_modules/, .cache/, .chrome-profile/, tests/out/),
+      # so only .git and .github need pruning — which mirrors the exclude list
+      # the legacy Pages upload used. The repo-root .nojekyll travels with it and
+      # stops Jekyll from rewriting README.md and docs/*.md into HTML the way the
+      # legacy build did.
+      - name: Stage site
+        run: |
+          mkdir -p _site
+          tar -cf - --exclude=./.git --exclude=./.github . | tar -xf - -C _site
+
+      - name: Sanity-check the staged site
+        run: |
+          set -e
+          for f in index.html css/styles.css coi-serviceworker.js \
+                   js/app.js js/harness.js js/engines/NeedleEngine.js \
+                   js/vendor/needle/needle.js js/vendor/needle/needle.wasm; do
+            test -f "_site/$f" || { echo "MISSING from staged site: $f"; exit 1; }
+          done
+          echo "staged site OK: $(find _site -type f | wc -l) files"
+
+      - name: Upload artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: _site
+
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4
