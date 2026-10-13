@@ -66,7 +66,7 @@ let downloadController = null; // AbortController for the download step
 let downloadBusy = false;
 let pipelineBusy = false;
 
-const isDownloadable = (key) => key === 'webllm' || key === 'transformers';
+const isDownloadable = (key) => key === 'webllm' || key === 'transformers' || key === 'needle';
 
 /* ── Environment Gatekeeper ─────────────────────────────────────── */
 async function checkEnvironment() {
@@ -118,6 +118,7 @@ const ENGINE_HINTS = {
   nano: 'Preinstalled on supported Chrome builds — zero download, runs fully on-device.',
   webllm: 'Needs WebGPU. Click ⤓ Download model ONCE (~480 MB, cached by your browser) — Run unlocks when the model is ready.',
   transformers: 'Runs on ANY machine via WASM — no WebGPU needed. First click enables multi-core WASM (the page reloads once or twice — normal), then ⤓ Download model (~512 MB, cached). Measured on a T480 (i5-8250U): ~0.4 tok/s single-threaded → ~1–2 tok/s multi-core (~2× faster overall, CPU maxed). Waterfall shows a live token counter either way.',
+  needle: 'Experimental. Needle 2 is a 14 MB tool-calling model (Apache-2.0) that runs on plain WASM: it EXTRACTS conditions in ~0.5–4.5s per chunk with no 500 MB download. It cannot rewrite. Asked for plain English it hands the input back unchanged; asked to fill template slots instead it invents values (a fabricated deadline, made-up document ids). So Stage 2 returns the requirement itself (acronym-expanded) rather than a warm rewrite. See docs/needle2-evaluation.md.',
 };
 
 function refreshEngineUi() {

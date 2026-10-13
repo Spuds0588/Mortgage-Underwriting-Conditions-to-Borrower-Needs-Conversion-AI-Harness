@@ -1,0 +1,12 @@
+# Node tooling (headed-Chrome test harness only — the site itself is zero-build)
+node_modules/
+
+# Throwaway Chrome profile used by tools/headed.mjs (never the user's profile)
+.chrome-profile/
+tests/out/
+
+# Cached model weights used by tools/needle-bench.mjs (13.7 MB, re-fetchable)
+.cache/
+
+# Freebuff local project metadata — tooling state, not part of the site
+.freebuff/

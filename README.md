@@ -19,6 +19,7 @@ The harness auto-detects three **local** inference engines — every run happens
 | **Gemini Nano** | Chrome built-in Prompt API (`window.LanguageModel`) | Zero download on supported builds. Distributed only for Windows/macOS Chrome — **not served to Linux** (verified: the `Optimization Guide On Device Model` component is absent from `chrome://components` on Linux Chrome 153). |
 | **WebLLM** | WebGPU | Runs Qwen2.5-0.5B-Instruct (4-bit) in-browser; ~500 MB one-time download, cached by the browser. |
 | **Transformers.js** | ONNX Runtime Web (WebGPU → WASM fallback) | Same model family, ~350–500 MB one-time download, cached. |
+| **Needle 2** *(experimental)* | Cactus Needle WASM runtime | 13.7 MB, 45M-parameter tool-calling model. Real Stage-1 extraction in ~0.5–4.5 s/chunk with **no** 500 MB download — but it cannot rewrite: asked for prose it echoes the input, and asked to fill template slots instead it invents values (a fabricated deadline, made-up document ids). Stage 2 returns the requirement itself. Verdict and evidence: [docs/needle2-evaluation.md](docs/needle2-evaluation.md). |
 
 ### 🔧 Enabling Gemini Nano (Windows/macOS only)
 
@@ -29,6 +30,44 @@ The harness auto-detects three **local** inference engines — every run happens
 On Linux or unsupported hardware, select the **WebLLM** or **Transformers.js** engine instead — identical pipeline, real local model.
 
 ---
+
+## 🧪 Testing it yourself (headed Chrome, no built-in browser needed)
+
+Everything in `tests/` runs against real Google Chrome with a real persistent
+profile, so Gemini Nano's model store, the Transformers.js cache and the
+Needle 2 weight cache all survive between runs.
+
+```sh
+npm install                     # playwright-core only; the site stays zero-build
+node tests/smoke.mjs            # 22 deterministic checks, no browser/network (~1 s)
+node tools/serve.mjs            # header-less static server, GitHub Pages style
+
+# real browser, real page, real engines:
+node tests/headed/run.mjs                                   # environment probe
+node tests/headed/run.mjs --engine=needle --sample=ocr       # ~19 s end to end
+node tests/headed/run.mjs --engine=transformers --sample=ocr --timeout=900
+node tests/headed/run.mjs --matrix                           # every engine × Clean JSON
+node tests/headed/run.mjs --headless --fresh                 # clean profile, CI-ish
+```
+
+Notes:
+
+- The runner serves the repo the way GitHub Pages does (no COOP/COEP) and
+  asserts `crossOriginIsolated` became true — i.e. it tests the COI shim, not a
+  convenient localhost header.
+- Chrome is launched via `channel: chrome` / `/usr/bin/google-chrome` with a
+  throwaway profile in `.chrome-profile/` (gitignored). It symlinks the system
+  profile's on-device model store so Nano does not re-download ~4 GB.
+- **First Nano run in that throwaway profile still needs the component marked
+  installed** (`LanguageModel.availability()` reports `downloadable`, not
+  `available`); Chrome downloads it on first `LanguageModel.create()`. Until
+  then use `--engine=transformers` or `--engine=needle` for unattended checks.
+- Every run writes `tests/out/<timestamp>-<engine>-<sample>.json` with the whole
+  telemetry report, so quality/speed claims stay auditable.
+- `node tools/needle-bench.mjs` runs the same Needle 2 schemas in Node (seconds
+  per change, no browser) — that is where the framing A/B (`--stage=frame`) and
+  the Stage-2 falsification (`--stage=slot`) in
+  [docs/needle2-evaluation.md](docs/needle2-evaluation.md) come from.
 
 ## 🚀 How to use
 

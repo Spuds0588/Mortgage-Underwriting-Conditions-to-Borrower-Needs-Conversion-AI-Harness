@@ -14,11 +14,12 @@
 import { NanoEngine } from './engines/NanoEngine.js';
 import { WebLlmEngine } from './engines/WebLlmEngine.js';
 import { TransformersEngine } from './engines/TransformersEngine.js';
+import { NeedleEngine } from './engines/NeedleEngine.js';
 
 /* ── Build identity ─────────────────────────────────────────────── */
 
 /** Bumped with each behavior change so downloaded reports self-identify. */
-export const HARNESS_VERSION = '1.8.1';
+export const HARNESS_VERSION = '1.9.0';
 
 /* ── Default, user-tunable prompts (Advanced Settings) ──────────── */
 
@@ -71,6 +72,9 @@ export const ENGINES = {
   nano: NanoEngine,
   webllm: WebLlmEngine,
   transformers: TransformersEngine,
+  // Experimental example engine: 14 MB schema-constrained extractor.
+  // Stage 1 is real; Stage 2 is a documented pass-through (see NeedleEngine.js).
+  needle: NeedleEngine,
 };
 
 /* ── Small utilities ────────────────────────────────────────────── */
@@ -492,6 +496,7 @@ export class Harness {
         try {
           const raw = await engine.prompt(prompt, {
             signal,
+            phase: 'EXTRACT',
             temperature: 0.1,
             onToken: makeTokenHeartbeat(emit, 'EXTRACT', chunk.id, t0, tokenCounts),
           });
@@ -505,6 +510,7 @@ export class Harness {
             const t1 = performance.now();
             const raw2 = await engine.prompt(prompt, {
               signal,
+              phase: 'EXTRACT',
               temperature: 0.1,
               onToken: makeTokenHeartbeat(emit, 'EXTRACT', chunk.id, t1, tokenCounts),
             });
@@ -564,6 +570,7 @@ export class Harness {
           // slightly run to run.
           const raw = await engine.prompt(prompt, {
             signal,
+            phase: 'TRANSLATE',
             temperature: 0.3,
             maxTokens: TRANSLATE_MAX_TOKENS,
             onToken: makeTokenHeartbeat(emit, 'TRANSLATE', cond.id, t0, tokenCounts),

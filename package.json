@@ -1,0 +1,23 @@
+{
+  "name": "mortgage-underwriting-conditions-to-borrower-needs-conversion-ai-harness",
+  "version": "1.9.0",
+  "description": "Local AI: loan underwriting conditions → client-friendly borrower needs, 100% on-device (Gemini Nano, WebLLM, Transformers.js, Needle 2).",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "serve": "node tools/serve.mjs",
+    "test": "node tests/smoke.mjs",
+    "test:headed": "node tests/headed/run.mjs",
+    "test:headed:needle": "node tests/headed/run.mjs --engine=needle --sample=ocr",
+    "test:headed:all": "node tests/headed/run.mjs --matrix",
+    "bench:needle": "node tools/needle-bench.mjs"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Spuds0588/Mortgage-Underwriting-Conditions-to-Borrower-Needs-Conversion-AI-Harness.git"
+  },
+  "license": "ISC",
+  "devDependencies": {
+    "playwright-core": "^1.64.0"
+  }
+}
