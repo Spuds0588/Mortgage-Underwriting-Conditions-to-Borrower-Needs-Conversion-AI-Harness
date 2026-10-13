@@ -22,44 +22,22 @@
  * the weights (needle2.cact) are fetched once from the Hugging Face CDN and
  * cached in Cache Storage, because 13.7 MB of binary does not belong in git.
  *
+ * INFERENCE RUNS IN A WEB WORKER (needleWorker.js). The vendored build exposes a
+ * SYNCHRONOUS entry point, so calling it from the page blocked the main thread
+ * for the length of every decode: nothing painted, timers did not fire, and the
+ * results appeared all at once when the pipeline finished. That file carries the
+ * before/after measurements.
+ *
  * Implements the BaseEngine contract (see BaseEngine.js).
  */
 import { BaseEngine } from './BaseEngine.js';
 import { NEEDLE_EXTRACT_TOOL, frameExtract, unwrapHarnessPrompt } from './needleSchema.js';
 
-const RUNTIME_URL = new URL('../vendor/needle/needle.js', import.meta.url).href;
 const MODEL_URL = 'https://huggingface.co/Cactus-Compute/needle2/resolve/main/needle2.cact';
 const MODEL_BYTES = 13737807;
 const CACHE_NAME = 'needle2-weights-v1';
-const OUT_CAPACITY = 64 * 1024;      // one call's JSON is well under 64 KB
-const EXTRACT_MAX_TOKENS = 256;
 /** Longest edge: a chunk's conditions array; keep it from rambling. */
-const LOAD_TIMEOUT_MS = 120000;
-
-/** Injection: load the vendored UMD runtime as a classic script once. */
-function loadRuntime(signal) {
-  if (typeof window === 'undefined') return Promise.reject(new Error('NeedleEngine: no window.'));
-  if (typeof window.createNeedle === 'function') return Promise.resolve(window.createNeedle);
-  return new Promise((resolve, reject) => {
-    const script = document.createElement('script');
-    script.src = RUNTIME_URL;
-    script.async = true;
-    const timer = setTimeout(() => reject(new Error('NeedleEngine: needle.js load timed out.')), LOAD_TIMEOUT_MS);
-    const onAbort = () => { clearTimeout(timer); script.remove(); reject(new DOMException('Aborted', 'AbortError')); };
-    if (signal) {
-      if (signal.aborted) return onAbort();
-      signal.addEventListener('abort', onAbort, { once: true });
-    }
-    script.onload = () => {
-      clearTimeout(timer);
-      typeof window.createNeedle === 'function'
-        ? resolve(window.createNeedle)
-        : reject(new Error('NeedleEngine: needle.js loaded but exposed no factory.'));
-    };
-    script.onerror = () => { clearTimeout(timer); reject(new Error('NeedleEngine: failed to load needle.js.')); };
-    document.head.appendChild(script);
-  });
-}
+const EXTRACT_MAX_TOKENS = 256;
 
 /**
  * Fetch the weights, preferring the Cache Storage copy so repeat runs are
@@ -190,12 +168,20 @@ export class NeedleEngine extends BaseEngine {
   /** Telemetry label shown in the UI/report. */
   model = 'Cactus Needle 2 (45M, CQ2) — wasm';
 
-  /** @type {object|null} Emscripten module (holds the wasm heap + exports). */
-  #module = null;
+  /** @type {Worker|null} Runs the blocking wasm call off the main thread. */
+  #worker = null;
 
-  /** @type {(() => void)|null} */ #initFn = null;
-  /** @type {((input: string, max: number, out: number, cap: number) => number)|null} */ #completeFn = null;
-  /** @type {number} */ #outPtr = 0;
+  /** @type {Uint8Array|null} Retained weights, so a torn-down worker can be rebuilt. */
+  #weights = null;
+
+  /** @type {boolean} Worker booted with the runtime and the archive loaded. */
+  #ready = false;
+
+  /** @type {number} Correlates a request with its reply. */
+  #seq = 0;
+
+  /** @type {Map<number, {resolve: (v: object) => void, reject: (e: Error) => void}>} */
+  #pending = new Map();
 
   async isAvailable() {
     // Pure WebAssembly — no WebGPU, no special browser features. The only
@@ -209,27 +195,111 @@ export class NeedleEngine extends BaseEngine {
       if (typeof progressCallback === 'function') progressCallback(msg);
     };
 
-    if (this.#module) return;   // already loaded (cached engine reuse)
+    if (this.#ready && this.#worker) return;   // already loaded (cached engine reuse)
 
-    const createNeedle = await loadRuntime(opts.signal);
-    say('runtime: needle.js ready (wasm engine)');
-    const Module = await createNeedle({});
-    say('runtime: needle.wasm instantiated');
-    const bytes = await fetchWeights(say, opts.signal);
-
-    say('model: loading 13.7 MB archive into the wasm heap…');
-    const ptr = Module._malloc(bytes.length);
-    Module.HEAPU8.set(bytes, ptr);
-    // needle_load takes (const unsigned char*, unsigned long long) → BigInt.
-    const rc = Module._needle_load(ptr, BigInt(bytes.length));
-    Module._free(ptr);
-    if (rc < 0) throw new Error(`NeedleEngine: needle_load failed (${rc}).`);
-
-    this.#module = Module;
-    this.#initFn = Module.cwrap('needle_init', 'number', ['string', 'string', 'string']);
-    this.#completeFn = Module.cwrap('needle_complete', 'number', ['string', 'number', 'number', 'number']);
-    this.#outPtr = Module._malloc(OUT_CAPACITY);
+    // Fetch once and retain: a Stop tears the worker down, and the next run
+    // rebuilds it from this copy instead of re-downloading 13.7 MB.
+    if (this.#weights) {
+      say('weights: reusing the archive already in memory');
+    } else {
+      this.#weights = await fetchWeights(say, opts.signal);
+    }
+    await this.#boot(say, opts.signal);
     say('model: Needle 2 ready ✓ (extraction only — Stage 2 is a pass-through)');
+  }
+
+  /**
+   * Boot the worker (if needed), instantiate the runtime inside it, and load
+   * the archive into its heap.
+   * @param {(msg: string) => void} say
+   * @param {AbortSignal} [signal]
+   */
+  async #boot(say, signal) {
+    if (this.#ready && this.#worker) return;
+    if (!this.#weights) throw new Error('NeedleEngine: boot() called before the weights were fetched.');
+    if (!this.#worker) this.#spawn();
+
+    say('runtime: needle.js + needle.wasm loading in a worker…');
+    await this.#request('init', {}, signal);
+    say('model: loading 13.7 MB archive into the wasm heap…');
+    // Transfer a copy rather than the original, so the retained archive
+    // survives for a rebuild after Stop.
+    const copy = this.#weights.slice();
+    await this.#request('weights', { bytes: copy.buffer }, signal, [copy.buffer]);
+    this.#ready = true;
+  }
+
+  /** Boot on demand — a Stop discards the worker, so the next run rebuilds it. */
+  async #ensure(signal) {
+    if (this.#ready && this.#worker) return;
+    await this.#boot(() => {}, signal);
+  }
+
+  /** Create the inference worker and wire its message plumbing. */
+  #spawn() {
+    if (typeof Worker === 'undefined') {
+      throw new Error('NeedleEngine: this environment has no Worker support.');
+    }
+    const worker = new Worker(new URL('./needleWorker.js', import.meta.url), { type: 'classic' });
+    worker.onmessage = (event) => {
+      const msg = event.data ?? {};
+      const entry = this.#pending.get(msg.id);
+      if (!entry) return;                       // reply to an abandoned request
+      this.#pending.delete(msg.id);
+      if (msg.type === 'error') entry.reject(new Error(`NeedleEngine: ${msg.message}`));
+      else entry.resolve(msg);
+    };
+    worker.onerror = (event) => {
+      const err = new Error(`NeedleEngine: worker failed — ${event?.message ?? 'unknown error'}`);
+      for (const entry of this.#pending.values()) entry.reject(err);
+      this.#killWorker();
+    };
+    this.#worker = worker;
+  }
+
+  /**
+   * Post one request and await its reply.
+   *
+   * This round trip is the whole point of the worker: the reply arrives as a
+   * message, i.e. in a later task, so the browser gets to paint between chunks
+   * instead of being blocked by a synchronous call. It is also what makes Stop
+   * immediate, since the abort discards the worker rather than waiting for the
+   * current decode to finish.
+   * @param {'init'|'weights'|'run'} type
+   * @param {object} payload
+   * @param {AbortSignal} [signal]
+   * @param {Transferable[]} [transfer]
+   * @returns {Promise<object>}
+   */
+  #request(type, payload, signal, transfer = []) {
+    const worker = this.#worker;
+    if (!worker) throw new Error('NeedleEngine: the worker is not running.');
+    const id = ++this.#seq;
+    return new Promise((resolve, reject) => {
+      const onAbort = () => {
+        this.#pending.delete(id);
+        this.#killWorker();   // a synchronous wasm call cannot be interrupted
+        reject(new DOMException('Aborted', 'AbortError'));
+      };
+      if (signal) {
+        if (signal.aborted) return onAbort();
+        signal.addEventListener('abort', onAbort, { once: true });
+      }
+      this.#pending.set(id, {
+        resolve: (v) => { signal?.removeEventListener('abort', onAbort); resolve(v); },
+        reject: (e) => { signal?.removeEventListener('abort', onAbort); reject(e); },
+      });
+      worker.postMessage({ type, id, ...payload }, transfer);
+    });
+  }
+
+  /** Tear the worker down. Safe to call repeatedly. */
+  #killWorker() {
+    const worker = this.#worker;
+    this.#worker = null;
+    this.#ready = false;
+    this.#pending.clear();
+    try { worker?.terminate(); } catch { /* already gone */ }
   }
 
   /**
@@ -248,11 +318,17 @@ export class NeedleEngine extends BaseEngine {
     // here, which is why this branch sits before the init() guard.
     if (opts.phase === 'TRANSLATE') return payload;
 
-    if (!this.#module) throw new Error('NeedleEngine: prompt() called before init().');
+    await this.#ensure(opts.signal);
 
-    const out = this.#run(frameExtract(payload), NEEDLE_EXTRACT_TOOL, EXTRACT_MAX_TOKENS);
+    const out = await this.#request('run', {
+      query: frameExtract(payload),
+      tools: JSON.stringify(NEEDLE_EXTRACT_TOOL),
+      maxNewTokens: EXTRACT_MAX_TOKENS,
+    }, opts.signal);
     if (opts.signal && opts.signal.aborted) throw new DOMException('Aborted', 'AbortError');
-    const raw = out.json;
+
+    let raw = null;
+    try { raw = JSON.parse(out.raw); } catch { /* refusal — the guards below cover it */ }
     const calls = raw && Array.isArray(raw.function_calls) ? raw.function_calls : [];
     const conditions = calls.length ? (calls[0].arguments?.conditions ?? []) : [];
 
@@ -272,32 +348,11 @@ export class NeedleEngine extends BaseEngine {
   }
 
   /**
-   * One grammar-constrained completion.
-   * @returns {{json: object|null, raw: string, ms: number, generated: number}}
-   */
-  #run(query, tools, maxNewTokens) {
-    const Module = this.#module;
-    Module._needle_reset();
-    // needle_init returns cached prefix tokens; negative means failure.
-    const rc = this.#initFn(null, JSON.stringify(tools), null);
-    if (rc < 0) throw new Error(`NeedleEngine: needle_init failed (${rc}).`);
-    const t0 = performance.now();
-    const generated = this.#completeFn(query, maxNewTokens, this.#outPtr, OUT_CAPACITY);
-    const ms = Math.round(performance.now() - t0);
-    const out = Module.UTF8ToString(this.#outPtr);
-    let json = null;
-    try { json = JSON.parse(out); } catch { /* leave raw for the caller */ }
-    return { json, raw: out, ms, generated };
-  }
-
-  /**
-   * Release references. The wasm build exposes no unload entry point, so the
-   * heap is reclaimed with the page/worker rather than eagerly here.
+   * Release resources. The wasm build exposes no unload entry point, so the
+   * heap goes away with the worker; the retained weights are dropped too.
    */
   destroy() {
-    this.#initFn = null;
-    this.#completeFn = null;
-    this.#module = null;
-    this.#outPtr = 0;
+    this.#killWorker();
+    this.#weights = null;
   }
 }

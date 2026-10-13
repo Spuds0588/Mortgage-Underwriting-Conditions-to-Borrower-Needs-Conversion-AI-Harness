@@ -60,6 +60,7 @@ jobs:
           set -e
           for f in index.html css/styles.css coi-serviceworker.js \
                    js/app.js js/harness.js js/engines/NeedleEngine.js \
+                   js/engines/needleWorker.js \
                    js/vendor/needle/needle.js js/vendor/needle/needle.wasm; do
             test -f "_site/$f" || { echo "MISSING from staged site: $f"; exit 1; }
           done

@@ -198,6 +198,38 @@ multi-core) takes ~318 s and produces 6 conditions, and Gemini Nano is
 Chrome-native. Needle 2 is ~17× faster than the 0.5B and ~200× smaller — its
 ceiling is the task, not the hardware.
 
+### 6. The frozen UI: inference had to leave the main thread
+
+Not a model finding, but it came out of the same investigation. Reported symptom:
+with the `needle` engine the page froze for the whole run and only drew the
+results at the end, while Nano updated live.
+
+The cause is that the vendored build's entry point is **synchronous** —
+`needle_complete` returns only once the entire completion has been decoded — and
+`await`ing it resolves as a *microtask*. The chunk loop therefore never reached a
+task boundary, so the browser never produced a frame, no timer fired, and even the
+Stop button's click handler could not run. Measured in headed Chrome
+(`node tests/headed/run.mjs --engine=needle --sample=ocr`), before the fix:
+
+| | before | after |
+|---|---|---|
+| animation frames during the run | **5** | **2 464** |
+| `setInterval` ticker ticks (500 ms ticker) | **1** | **411** |
+| frames between consecutive chunk rows | **0 of 11** | 6 of 6 while decoding |
+| first row drawn after the click | 10.4 s | 0.01 s |
+| click Stop → UI reports stopped | handler could not run | **10 ms** |
+
+The fix moves the call into a Web Worker (`js/engines/needleWorker.js`), so the
+reply arrives as a message — a real task boundary — and the browser paints between
+chunks. It also makes Stop immediate: the abort discards the worker, and the next
+run rebuilds it from the weights already in memory (verified: a run cancelled
+mid-decode is followed by a clean 6/6 run).
+
+The one zero-frame batch left is Stage 2, which is a pass-through and finishes
+instantly — there is genuinely no work to display. To keep this from regressing,
+the headed runner asserts **"UI stays live while running"** (≥ 5 frames/s with
+work in flight), which fails against the old main-thread path.
+
 ## Reproducing
 
 ```sh

@@ -109,6 +109,27 @@ async function runOnce(ctx, { engine, sample }) {
     });
   }
 
+  // Paint probe, installed before the click. A synchronous engine blocks the
+  // main thread, so the browser produces no frames while work is in flight and
+  // the results only appear once everything has finished. Counting frames that
+  // land BETWEEN waterfall rows is the difference between "live" and "frozen" —
+  // a MutationObserver alone would report the DOM changing even while blocked.
+  await page.evaluate(() => {
+    window.__lastReport = null;
+    const probe = { t0: performance.now(), frames: [], rows: [], ticks: 0 };
+    window.__paint = probe;
+    const stamp = () => performance.now() - probe.t0;
+    (function frame() { probe.frames.push(stamp()); requestAnimationFrame(frame); })();
+    setInterval(() => { probe.ticks += 1; }, 100);
+    new MutationObserver((muts) => {
+      for (const m of muts) {
+        for (const n of m.addedNodes) {
+          if (n.nodeType === 1 && n.classList?.contains('wf-row')) probe.rows.push(stamp());
+        }
+      }
+    }).observe(document.getElementById('waterfall'), { childList: true });
+  });
+
   await check(`${engine}/${sample}: run pipeline`, async () => {
     await page.evaluate(() => { window.__lastReport = null; });
     await page.click('#run-btn');
@@ -121,6 +142,28 @@ async function runOnce(ctx, { engine, sample }) {
     const { meta } = report;
     return `${report.items.length} conditions in ${(meta.totalMs / 1000).toFixed(1)}s ` +
       `(${meta.promptCount} prompts, ${meta.errorCount} errors, engine=${meta.engine}${meta.preloaded ? ', preloaded' : ''})`;
+  });
+
+  await check(`${engine}/${sample}: UI stays live while running`, async () => {
+    const p = await page.evaluate(() => {
+      const { frames, rows, ticks } = window.__paint ?? { frames: [], rows: [], ticks: 0 };
+      const start = rows[0] ?? 0;
+      const end = rows[rows.length - 1] ?? start;
+      return {
+        framesInSpan: frames.filter((t) => t >= start && t <= end).length,
+        spanMs: end - start,
+        rows: rows.length,
+        ticks,
+      };
+    });
+    const spanSec = p.spanMs / 1000;
+    if (spanSec < 0.2) return `run too short to judge (${spanSec.toFixed(2)}s)`;
+    const fps = p.framesInSpan / spanSec;
+    assert(fps >= 5,
+      `main thread was blocked while work was in flight: ${fps.toFixed(1)} frames/s ` +
+      `(${p.framesInSpan} frames over ${spanSec.toFixed(1)}s, ${p.ticks} ticker ticks)`);
+    return `${fps.toFixed(0)} frames/s while running ` +
+      `(${p.rows} rows, ${p.ticks} ticker ticks over ${spanSec.toFixed(1)}s)`;
   });
 
   if (report) {

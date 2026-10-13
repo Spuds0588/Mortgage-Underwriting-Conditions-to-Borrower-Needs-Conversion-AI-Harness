@@ -64,6 +64,10 @@ Notes:
   then use `--engine=transformers` or `--engine=needle` for unattended checks.
 - Every run writes `tests/out/<timestamp>-<engine>-<sample>.json` with the whole
   telemetry report, so quality/speed claims stay auditable.
+- Runs also assert the UI **stays live while work is in flight** (≥ 5 animation
+  frames/s between waterfall rows). An engine that blocks the main thread fails
+  this even when the final output is correct — see
+  [docs/needle2-evaluation.md](docs/needle2-evaluation.md) §6.
 - `node tools/needle-bench.mjs` runs the same Needle 2 schemas in Node (seconds
   per change, no browser) — that is where the framing A/B (`--stage=frame`) and
   the Stage-2 falsification (`--stage=slot`) in
