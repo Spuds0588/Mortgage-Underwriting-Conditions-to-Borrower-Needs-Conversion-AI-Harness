@@ -175,6 +175,24 @@ does split a paragraph into requirement-ish sentences (visible in the email
 run: "double-check notes for reserves" came back as its own condition, which the
 paragraph cascade would have merged into the neighbour).
 
+**"6/6" counts needs produced, not needs that read well — and on garbled input
+they do not.** Because grounding returns the _source_ slice rather than the
+model's rewording (deliberate: fidelity over fluency), and Stage 2 is the
+deterministic acronym expansion rather than a model call, OCR garble survives
+into the borrower-facing text. `expandAcronyms()` repairs known jargon (YTD →
+"year-to-date (YTD)", VOE → "proof of employment (VOE)", "rent schedule" →
+"document listing expected rental income (rent schedule)"), so `cond_5` does
+read cleanly. Everything else is passed through untouched — `cond_1` still
+begins `qu4lifiedescrow: w4it 3O d4ys t0 pull 4ny Escr0w reserves fr0m p4r
+p4yment`, and `cond_4` keeps `£lear`, `2Ol9` and `re4d`.
+
+That is the honest comparison against the 0.5B engine, which on the same sample
+emits clean, sentence-shaped English at ~318 s. The Needle path is ~12× faster,
+~35× smaller and gives 6/6, but on the OCR sample its Stage-2 text is not
+something to send a borrower — which is the cost of a model that can only quote.
+Verified on the deployed site (v1.9.0), same sample, `27.4 s`, 6/6, 0 errors, and
+byte-identical output to the local headed run.
+
 For reference, the same OCR sample on Transformers.js (Qwen2.5-0.5B, WASM,
 multi-core) takes ~318 s and produces 6 conditions, and Gemini Nano is
 Chrome-native. Needle 2 is ~17× faster than the 0.5B and ~200× smaller — its

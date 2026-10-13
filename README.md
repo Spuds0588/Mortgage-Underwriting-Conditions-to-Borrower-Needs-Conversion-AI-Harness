@@ -19,7 +19,7 @@ The harness auto-detects three **local** inference engines — every run happens
 | **Gemini Nano** | Chrome built-in Prompt API (`window.LanguageModel`) | Zero download on supported builds. Distributed only for Windows/macOS Chrome — **not served to Linux** (verified: the `Optimization Guide On Device Model` component is absent from `chrome://components` on Linux Chrome 153). |
 | **WebLLM** | WebGPU | Runs Qwen2.5-0.5B-Instruct (4-bit) in-browser; ~500 MB one-time download, cached by the browser. |
 | **Transformers.js** | ONNX Runtime Web (WebGPU → WASM fallback) | Same model family, ~350–500 MB one-time download, cached. |
-| **Needle 2** *(experimental)* | Cactus Needle WASM runtime | 13.7 MB, 45M-parameter tool-calling model. Real Stage-1 extraction in ~0.5–4.5 s/chunk with **no** 500 MB download — but it cannot rewrite: asked for prose it echoes the input, and asked to fill template slots instead it invents values (a fabricated deadline, made-up document ids). Stage 2 returns the requirement itself. Verdict and evidence: [docs/needle2-evaluation.md](docs/needle2-evaluation.md). |
+| **Needle 2** *(experimental)* | Cactus Needle WASM runtime | 13.7 MB, 45M-parameter tool-calling model. Real Stage-1 extraction in ~0.5–4.5 s/chunk with **no** 500 MB download — but it cannot rewrite: asked for prose it echoes the input, and asked to fill template slots instead it invents values (a fabricated deadline, made-up document ids). Stage 2 returns the requirement itself — so on garbled OCR input the borrower-facing text stays garbled (only known jargon is repaired). Verdict and evidence: [docs/needle2-evaluation.md](docs/needle2-evaluation.md). |
 
 ### 🔧 Enabling Gemini Nano (Windows/macOS only)
 
